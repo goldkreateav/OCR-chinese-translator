@@ -15,6 +15,7 @@ class GenerateRequest(BaseModel):
     poppler_path: str | None = None
     ocr_mode: str = "eco"  # eco | balanced | max
     ocr_workers: int | None = None
+    ocr_device: str | None = None  # cpu | cuda
 
 
 class ImportRenderRequest(BaseModel):
@@ -31,6 +32,7 @@ class ProjectStatusResponse(BaseModel):
     stage: str | None = None
     progress: dict | None = None
     progress_pages: dict | None = None
+    ocr_runtime: dict | None = None
     updated_at: str | None = None
 
 

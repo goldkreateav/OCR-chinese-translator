@@ -216,10 +216,12 @@ def precompute_region_text(
 
     # Opportunistic speedup: enable *small* parallelism only if requested.
     # Auto-enabling was shown to regress on some machines; keep it conservative.
+    is_cuda_device = str(getattr(recognition_config, "ocr_device", "cpu") or "cpu").lower() == "cuda"
     if (
         (recognition_config.backend or "").lower() == "rapidocr"
         and recognition_config.parallel_ocr
         and int(getattr(recognition_config, "max_workers", 1) or 1) > 2
+        and not is_cuda_device
     ):
         recognition_config.max_workers = 2
     recognizer = RegionTextRecognizer(recognition_config)

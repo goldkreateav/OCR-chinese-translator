@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from typing import Any
+import warnings
 
 import cv2
 import numpy as np
@@ -54,6 +55,7 @@ class RecognitionConfig:
     parallel_ocr: bool = False
     max_workers: int = 1
     batch_size: int = 64
+    ocr_device: str = "cpu"  # cpu | cuda
 
 
 def should_use_angle_classifier(config: RecognitionConfig) -> bool:
@@ -61,6 +63,53 @@ def should_use_angle_classifier(config: RecognitionConfig) -> bool:
     if mode == "accurate":
         return True
     return bool(config.retry_enabled and config.backend == "paddleocr")
+
+
+def _normalize_ocr_device(device: str | None) -> str:
+    value = (device or "cpu").strip().lower()
+    if value in {"cuda", "gpu"}:
+        return "cuda"
+    return "cpu"
+
+
+def _rapidocr_init_kwargs(device: str) -> dict[str, Any]:
+    use_cuda = _normalize_ocr_device(device) == "cuda"
+    return {
+        "det_use_cuda": use_cuda,
+        "rec_use_cuda": use_cuda,
+        "cls_use_cuda": use_cuda,
+        # Current rapidocr_onnxruntime updater expects these keys when det/rec/cls
+        # kwargs are provided; keep defaults by passing None.
+        "det_model_path": None,
+        "rec_model_path": None,
+        "cls_model_path": None,
+    }
+
+
+def _build_rapidocr(device: str) -> Any:
+    if RapidOCR is None:
+        return None
+    normalized = _normalize_ocr_device(device)
+    if normalized != "cuda":
+        return RapidOCR()
+    try:
+        return RapidOCR(**_rapidocr_init_kwargs(normalized))
+    except TypeError:
+        warnings.warn(
+            "RapidOCR in this environment does not accept CUDA init kwargs; "
+            "falling back to CPU.",
+            RuntimeWarning,
+        )
+        return RapidOCR()
+    except Exception as exc:
+        warnings.warn(
+            f"Failed to initialize RapidOCR with CUDA ({exc}); falling back to CPU.",
+            RuntimeWarning,
+        )
+        try:
+            return RapidOCR()
+        except Exception:
+            return None
 
 
 class RegionTextRecognizer:
@@ -73,7 +122,7 @@ class RegionTextRecognizer:
         self._last_trace: dict[str, Any] = {}
         if config.backend != "paddleocr":
             if config.backend == "rapidocr" and RapidOCR is not None:
-                self._rapid = RapidOCR()
+                self._rapid = _build_rapidocr(config.ocr_device)
             # Allow optional high-quality fallback through external Paddle bridge.
             if config.bridge_fallback_enabled and (config.paddle_python or os.getenv("OCR_PADDLE_PYTHON")):
                 self._paddle_bridge = _maybe_build_paddle_bridge(config)
@@ -84,7 +133,7 @@ class RegionTextRecognizer:
         if config.paddle_python or os.getenv("OCR_PADDLE_PYTHON"):
             self._paddle_bridge = _maybe_build_paddle_bridge(config)
             if self._paddle_bridge is None and RapidOCR is not None:
-                self._rapid = RapidOCR()
+                self._rapid = _build_rapidocr(config.ocr_device)
             return
         try:
             from paddleocr import PaddleOCR  # type: ignore
@@ -110,7 +159,7 @@ class RegionTextRecognizer:
                 self._paddle = None
                 self._paddle_bridge = _maybe_build_paddle_bridge(config)
                 if self._paddle_bridge is None and RapidOCR is not None:
-                    self._rapid = RapidOCR()
+                    self._rapid = _build_rapidocr(config.ocr_device)
 
     def consume_last_trace(self) -> dict[str, Any]:
         trace = dict(self._last_trace)
@@ -1379,6 +1428,15 @@ def build_region_records_parallel_threaded(
         )
 
     workers = max(1, int(recognition_config.max_workers))
+    total_items = len(items)
+    ocr_device = str(getattr(recognition_config, "ocr_device", "cpu") or "cpu").strip().lower()
+    # GPU runs many ROIs quickly; emit progress more frequently to avoid "jumpy" bars.
+    if total_items <= 20:
+        progress_every = 1
+    elif ocr_device == "cuda":
+        progress_every = 2
+    else:
+        progress_every = 5
     records: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {
@@ -1394,12 +1452,12 @@ def build_region_records_parallel_threaded(
                 except Exception:
                     pass
             done_count += 1
-            if progress_callback and (done_count % 5 == 0 or done_count == len(items)):
+            if progress_callback and (done_count % progress_every == 0 or done_count == total_items):
                 try:
                     progress_callback(
                         {
                             "current_region": int(done_count),
-                            "total_regions": int(len(items)),
+                            "total_regions": int(total_items),
                         }
                     )
                 except Exception:

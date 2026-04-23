@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import warnings
 
 import cv2
 import numpy as np
@@ -19,6 +20,47 @@ class DetectionConfig:
     score_threshold: float = 0.2
     min_area: int = 16
     min_box_size: int = 4
+    ocr_device: str = "cpu"  # cpu | cuda
+
+
+def _normalize_ocr_device(device: str | None) -> str:
+    value = (device or "cpu").strip().lower()
+    if value in {"cuda", "gpu"}:
+        return "cuda"
+    return "cpu"
+
+
+def _build_rapidocr(device: str) -> Any:
+    if RapidOCR is None:
+        return None
+    normalized = _normalize_ocr_device(device)
+    if normalized != "cuda":
+        return RapidOCR()
+    try:
+        return RapidOCR(
+            det_use_cuda=True,
+            rec_use_cuda=True,
+            cls_use_cuda=True,
+            det_model_path=None,
+            rec_model_path=None,
+            cls_model_path=None,
+        )
+    except TypeError:
+        warnings.warn(
+            "RapidOCR in this environment does not accept CUDA init kwargs; "
+            "falling back to CPU.",
+            RuntimeWarning,
+        )
+        return RapidOCR()
+    except Exception as exc:
+        warnings.warn(
+            f"Failed to initialize RapidOCR with CUDA ({exc}); falling back to CPU.",
+            RuntimeWarning,
+        )
+        try:
+            return RapidOCR()
+        except Exception:
+            return None
 
 
 @dataclass
@@ -69,7 +111,7 @@ class OrientedTextDetector:
                     self._paddle = None
                     self._paddle_error = str(exc)
         if RapidOCR is not None:
-            self._rapid = RapidOCR()
+            self._rapid = _build_rapidocr(config.ocr_device)
 
     def detect(self, image_gray: np.ndarray) -> list[TextProposal]:
         if self._paddle is not None:

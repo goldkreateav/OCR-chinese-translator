@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
@@ -23,6 +24,7 @@ def create_app(
     default_poppler_path: str | None = None,
     default_ocr_mode: str = "eco",
     default_ocr_workers: int = 1,
+    default_ocr_device: str = "cpu",
 ) -> FastAPI:
     package_dir = Path(__file__).resolve().parent
     static_dir = package_dir / "static"
@@ -34,6 +36,7 @@ def create_app(
     app.state.default_poppler_path = default_poppler_path
     app.state.default_ocr_mode = default_ocr_mode
     app.state.default_ocr_workers = default_ocr_workers
+    app.state.default_ocr_device = default_ocr_device
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")
@@ -52,11 +55,14 @@ def create_app(
             v = pkg_version("ocr-chinese-masker")
         except Exception:
             v = "unknown"
+        runtime_probe = service._probe_ocr_runtime()
         return JSONResponse(
             {
                 "app_version": v,
                 "quality_bridge_enabled": bool(os.getenv("OCR_PADDLE_PYTHON")),
                 "bridge_python": os.getenv("OCR_PADDLE_PYTHON"),
+                "default_ocr_device": app.state.default_ocr_device,
+                **runtime_probe,
             }
         )
 
@@ -97,12 +103,14 @@ def create_app(
             if request.ocr_workers is not None
             else app.state.default_ocr_workers
         )
+        ocr_device = request.ocr_device or app.state.default_ocr_device
         options = GenerateOptions(
             dpi=request.dpi,
             render_backend=render_backend,
             poppler_path=poppler_path,
             ocr_mode=ocr_mode,
             ocr_workers=ocr_workers,
+            ocr_device=ocr_device,
         )
         payload = service.start_generate_background(project_id, options)
         return JSONResponse(payload)
@@ -118,6 +126,7 @@ def create_app(
             stage=data.get("stage"),
             progress=data.get("progress"),
             progress_pages=data.get("progress_pages"),
+            ocr_runtime=data.get("ocr_runtime"),
             updated_at=data.get("updated_at"),
         )
 

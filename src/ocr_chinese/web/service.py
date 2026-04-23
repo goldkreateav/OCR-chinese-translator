@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -36,6 +37,7 @@ class GenerateOptions:
     poppler_path: str | None = None
     ocr_mode: str = "eco"
     ocr_workers: int | None = None
+    ocr_device: str = "cpu"
 
 
 class ProjectService:
@@ -59,6 +61,51 @@ class ProjectService:
             t = threading.Thread(target=self._translate_worker_loop, name=f"translate-worker-{i}", daemon=True)
             t.start()
             self._translate_threads.append(t)
+
+    @staticmethod
+    def _probe_ocr_runtime() -> dict:
+        providers: list[str] = []
+        ort_error: str | None = None
+        cuda_usable = False
+        cuda_error: str | None = None
+        try:
+            import onnxruntime as ort  # type: ignore
+
+            providers = list(ort.get_available_providers() or [])
+        except Exception as exc:
+            ort_error = str(exc)
+
+        # Some ORT builds report CUDA as "available" but fail to load CUDA DLLs
+        # at runtime. Try to actually create a CUDA session to validate.
+        try:
+            if "CUDAExecutionProvider" in providers:
+                import onnxruntime as ort  # type: ignore
+                from rapidocr_onnxruntime import rapid_ocr_api  # type: ignore
+                from rapidocr_onnxruntime.utils import read_yaml  # type: ignore
+                from pathlib import Path as _Path
+
+                root_dir = _Path(rapid_ocr_api.__file__).resolve().parent
+                cfg_path = root_dir / "config.yaml"
+                cfg = read_yaml(str(cfg_path))
+                det_rel = str(((cfg.get("Det") or {}).get("model_path") or "")).strip()
+                model_path = root_dir / det_rel if det_rel else None
+                if model_path is not None and model_path.exists():
+                    sess = ort.InferenceSession(
+                        str(model_path),
+                        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                    )
+                    cuda_usable = "CUDAExecutionProvider" in (sess.get_providers() or [])
+        except Exception as exc:
+            cuda_error = str(exc)
+            cuda_usable = False
+
+        return {
+            "python_executable": sys.executable,
+            "ort_available_providers": providers,
+            "ort_cuda_available": bool(cuda_usable),
+            "ort_probe_error": ort_error,
+            "ort_cuda_error": cuda_error,
+        }
 
     def _translate_worker_loop(self) -> None:
         while True:
@@ -443,6 +490,20 @@ class ProjectService:
             "current_region": 0,
             "total_regions": 0,
         }
+        requested_device = str(options.ocr_device or "cpu").strip().lower()
+        if requested_device not in {"cpu", "cuda"}:
+            requested_device = "cpu"
+        runtime_probe = self._probe_ocr_runtime()
+        effective_device = (
+            "cuda"
+            if requested_device == "cuda" and bool(runtime_probe.get("ort_cuda_available"))
+            else "cpu"
+        )
+        status["ocr_runtime"] = {
+            "requested_device": requested_device,
+            "effective_device": effective_device,
+            **runtime_probe,
+        }
         status["updated_at"] = _utc_now()
         status["translate_status"] = "running"
         self._write_status(project_id, status)
@@ -451,6 +512,7 @@ class ProjectService:
             config = PipelineConfig(dpi=options.dpi)
             config.render.backend = options.render_backend
             config.render.poppler_path = options.poppler_path
+            config.detector.ocr_device = (options.ocr_device or "cpu").strip().lower()
             self._tune_pipeline_config(config, options)
             rec_cfg = self._build_recognition_config(options)
 
@@ -595,34 +657,64 @@ class ProjectService:
 
     def _build_recognition_config(self, options: GenerateOptions) -> RecognitionConfig:
         mode = (options.ocr_mode or "eco").lower()
+        ocr_device = (options.ocr_device or "cpu").strip().lower()
+        if ocr_device not in {"cpu", "cuda"}:
+            ocr_device = "cpu"
+        is_cuda = ocr_device == "cuda"
         cpu = int(os.cpu_count() or 4)
         auto_workers = max(2, min(8, cpu // 2))
         workers = options.ocr_workers if options.ocr_workers is not None else auto_workers
         workers = max(1, int(workers))
         if mode == "max":
+            max_workers = min(8, workers)
+            if is_cuda:
+                max_workers = min(8, max(2, workers))
             return RecognitionConfig(
                 mode="hybrid",
                 use_multipass=True,
                 parallel_ocr=True,
-                max_workers=min(8, workers),
-                batch_size=24,
-                parallel_min_regions=12,
+                max_workers=max_workers,
+                batch_size=20 if is_cuda else 24,
+                parallel_min_regions=10 if is_cuda else 12,
                 cascade_probe_variants=2,
+                ocr_device=ocr_device,
             )
         if mode == "balanced":
+            max_workers = min(4, workers)
+            if is_cuda:
+                max_workers = min(6, max(2, workers))
             return RecognitionConfig(
                 mode="hybrid",
                 use_multipass=False,
                 parallel_ocr=True,
-                max_workers=min(4, workers),
-                batch_size=28,
-                parallel_min_regions=14,
+                max_workers=max_workers,
+                batch_size=22 if is_cuda else 28,
+                parallel_min_regions=8 if is_cuda else 14,
                 cascade_probe_variants=2,
                 bridge_fallback_enabled=True,
                 bridge_fallback_confidence_threshold=0.82,
                 bridge_fallback_score_threshold=0.98,
+                ocr_device=ocr_device,
             )
         # eco (default): keep CPU usage low for personal machines
+        if is_cuda:
+            return RecognitionConfig(
+                mode="fast",
+                use_multipass=False,
+                parallel_ocr=True,
+                max_workers=min(4, max(2, workers)),
+                batch_size=20,
+                parallel_min_regions=8,
+                retry_confidence_threshold=0.70,
+                accept_confidence_threshold=0.92,
+                accept_score_threshold=1.04,
+                accept_min_length=6,
+                cascade_probe_variants=2,
+                bridge_fallback_enabled=True,
+                bridge_fallback_confidence_threshold=0.82,
+                bridge_fallback_score_threshold=0.98,
+                ocr_device=ocr_device,
+            )
         return RecognitionConfig(
             mode="fast",
             use_multipass=False,
@@ -638,6 +730,7 @@ class ProjectService:
             bridge_fallback_enabled=True,
             bridge_fallback_confidence_threshold=0.82,
             bridge_fallback_score_threshold=0.98,
+            ocr_device=ocr_device,
         )
 
     def _tune_pipeline_config(self, config: PipelineConfig, options: GenerateOptions) -> None:

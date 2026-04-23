@@ -136,6 +136,18 @@ With explicit Poppler:
 maskpdf web --host 127.0.0.1 --port 8000 --render-backend poppler --poppler-path "C:\Users\Valentin\Downloads\sollers-translate-pdf\third_party\poppler\poppler-25.12.0\Library\bin"
 ```
 
+To run RapidOCR on NVIDIA GPU (CUDA), start web server with:
+
+```bash
+maskpdf web --host 127.0.0.1 --port 8000 --ocr-device cuda
+```
+
+Notes for CUDA mode:
+
+- Install `onnxruntime-gpu` in the same Python environment.
+- Keep CUDA/cuDNN versions compatible with your `onnxruntime-gpu` build.
+- If CUDA provider is unavailable, OCR falls back to CPU automatically.
+
 Then open [http://127.0.0.1:8000](http://127.0.0.1:8000), upload PDF, click **Generate Mask + OCR**, and click any highlighted region to open copyable text.
 
 Note: if PaddleOCR runtime is unavailable (for example `paddle` is not installed), the app automatically falls back to `RapidOCR` for region text extraction.
