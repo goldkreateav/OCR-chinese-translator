@@ -63,6 +63,7 @@ def run_mask_pipeline(
     output_dir: Path,
     config: PipelineConfig,
     gt_masks_dir: Path | None = None,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered_dir = output_dir / "rendered_pages"
@@ -93,8 +94,34 @@ def run_mask_pipeline(
     page_paths = render_pdf_to_images(pdf_path, rendered_dir, render_options)
     render_ms = (time.perf_counter() - t_render) * 1000.0
     profiling["render_ms"] = render_ms
+    if progress_callback:
+        try:
+            progress_callback(
+                {
+                    "stage": "mask",
+                    "status": "running",
+                    "current_page": 0,
+                    "total_pages": int(len(page_paths)),
+                    "page_id": None,
+                }
+            )
+        except Exception:
+            pass
 
-    for page_path in page_paths:
+    for idx, page_path in enumerate(page_paths, start=1):
+        if progress_callback:
+            try:
+                progress_callback(
+                    {
+                        "stage": "mask",
+                        "status": "running",
+                        "current_page": int(idx),
+                        "total_pages": int(len(page_paths)),
+                        "page_id": page_path.stem,
+                    }
+                )
+            except Exception:
+                pass
         page_profile = {"page_id": page_path.stem}
         image = load_image(page_path)
         t0 = time.perf_counter()
@@ -225,6 +252,22 @@ def precompute_region_text(
         merge_ms = (time.perf_counter() - t_merge) * 1000.0
         profiling["merge_ms"] += merge_ms
         save_merged_proposals(page_id, proposals, merged_dir)
+        if progress_callback:
+            # Emit totals early so UI can show per-page progress/ETA even before OCR loop starts.
+            try:
+                progress_callback(
+                    {
+                        "stage": "ocr",
+                        "current_page": index,
+                        "total_pages": len(page_images),
+                        "page_id": page_id,
+                        "status": "running",
+                        "current_region": 0,
+                        "total_regions": int(len(proposals)),
+                    }
+                )
+            except Exception:
+                pass
 
         key = build_ocr_cache_key(page_image, proposal_file, recognition_config, len(proposals))
         cache_file = cache_dir / f"{page_id}_{key}.json"
@@ -378,6 +421,7 @@ def run_mask_pipeline_with_regions(
         output_dir=output_dir,
         config=config,
         gt_masks_dir=gt_masks_dir,
+        progress_callback=progress_callback,
     )
     total_pages = len(report.get("pages", []) or [])
     if progress_callback:
