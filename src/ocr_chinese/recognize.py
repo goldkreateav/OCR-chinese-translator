@@ -1084,6 +1084,43 @@ def _parse_recognition_result(result: Any) -> tuple[str, float]:
 
     def handle_item(item: Any) -> None:
         nonlocal best_text, best_score
+        # PaddleX / PaddleOCR 3.x sometimes returns dict/object-like items.
+        if isinstance(item, dict):
+            text = str(item.get("text") or item.get("rec_text") or item.get("label") or "").strip()
+            score_raw = item.get("score")
+            if score_raw is None:
+                score_raw = item.get("rec_score")
+            try:
+                score = float(score_raw) if score_raw is not None else 0.0
+            except Exception:
+                score = 0.0
+            if score > best_score and text:
+                best_text, best_score = text, score
+            # Recurse into common containers
+            for key in ("res", "result", "results", "rec_res", "items", "data"):
+                if key in item:
+                    handle_item(item[key])
+            return
+
+        # Object-like: try common attributes
+        for text_attr, score_attr in (
+            ("text", "score"),
+            ("rec_text", "rec_score"),
+            ("label", "score"),
+        ):
+            if hasattr(item, text_attr):
+                try:
+                    text = str(getattr(item, text_attr) or "").strip()
+                except Exception:
+                    text = ""
+                try:
+                    score = float(getattr(item, score_attr, 0.0) or 0.0)
+                except Exception:
+                    score = 0.0
+                if score > best_score and text:
+                    best_text, best_score = text, score
+                return
+
         if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[0], str):
             text = item[0].strip()
             score = float(item[1])
