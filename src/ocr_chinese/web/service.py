@@ -644,8 +644,12 @@ class ProjectService:
                     project_id, str(page_id), regions, lang="ru"
                 ),
             )
+            # Persist full report to disk. status.json remains a lightweight snapshot for polling.
+            self._write_report(project_id, report)
             status["status"] = "done"
             status["pages"] = len(report.get("pages", []))
+            status["report_path"] = str((output_dir / "report.json").as_posix())
+            status["ocr_profile_path"] = str((output_dir / "ocr_profile.json").as_posix())
             status["updated_at"] = _utc_now()
             status["translate_status"] = "running"
             self._write_status(project_id, status)
@@ -981,3 +985,20 @@ class ProjectService:
     def _write_status(self, project_id: str, status: dict) -> None:
         path = self._project_dir(project_id) / "status.json"
         path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _write_report(self, project_id: str, report: dict) -> None:
+        project_dir = self._project_dir(project_id)
+        out_dir = project_dir / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_path = out_dir / "report.json"
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # Convenience: persist OCR trace-only view for quick debugging.
+        try:
+            ocr_profile = (report.get("region_precompute") or {}).get("profiling") or {}
+        except Exception:
+            ocr_profile = {}
+        if ocr_profile:
+            (out_dir / "ocr_profile.json").write_text(
+                json.dumps(ocr_profile, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
