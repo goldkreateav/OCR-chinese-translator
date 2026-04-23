@@ -1,122 +1,71 @@
-body {
-  font-family: Arial, sans-serif;
+html,
+body,
+#root {
   margin: 0;
-  background: #f5f6f8;
-  color: #1f2937;
+  min-height: 100%;
+  font-family: "Segoe UI", "Tahoma", "Arial", sans-serif;
 }
 
-main {
-  max-width: 1200px;
-  margin: 20px auto;
-  padding: 0 16px;
-}
-
-.controls {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.status,
-.page-controls {
-  margin: 10px 0;
-}
-
-.muted {
-  color: rgba(31, 41, 55, 0.65);
+* {
+  box-sizing: border-box;
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-.version-row {
-  margin-top: 6px;
-  font-size: 13px;
-}
-
-.viewer-wrap {
-  margin-top: 12px;
-  background: #fff;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 8px;
-}
-
-.viewer {
+.viewer-surface {
   position: relative;
   width: 100%;
   overflow: auto;
+  border: 1px solid #CACCCE;
+  border-radius: 1rem;
 }
 
-#pageImage {
-  width: 100%;
+.viewer-page {
   display: block;
+  width: 100%;
 }
 
-.mask-image {
+.viewer-mask {
   position: absolute;
   left: 0;
   top: 0;
-  width: 100%;
-  opacity: 0.35;
+  display: block;
+  opacity: 0.36;
   pointer-events: none;
 }
 
-.region-overlay {
+.viewer-overlay {
   position: absolute;
   left: 0;
   top: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: auto;
+  display: block;
 }
 
 .region-polygon {
-  stroke-width: 1;
   cursor: pointer;
-  transition: fill 120ms ease, stroke-width 120ms ease, opacity 120ms ease;
+  stroke-width: 1;
+  transition: fill 140ms ease, stroke-width 140ms ease;
 }
 
-.region-polygon:hover {
-  opacity: 0.9;
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: #e4e5e6;
 }
 
-.hidden {
-  display: none;
-}
-
-.modal-backdrop {
-  position: fixed;
+.skeleton::after {
+  content: "";
+  position: absolute;
   inset: 0;
-  background: rgba(17, 24, 39, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.58), transparent);
+  animation: skeleton-shimmer 1.35s infinite;
 }
 
-/* Ensure hidden always wins over modal-backdrop display:flex */
-.modal-backdrop.hidden {
-  display: none;
-}
-
-.modal {
-  width: min(680px, 95vw);
-  background: #fff;
-  border-radius: 10px;
-  padding: 16px;
-}
-
-.modal textarea {
-  width: 100%;
-  margin-top: 8px;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 8px;
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
 }
