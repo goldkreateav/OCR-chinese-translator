@@ -568,8 +568,18 @@ class RegionTextRecognizer:
                     rec=True,
                     cls=self._use_angle_cls,
                 )
-            except TypeError:
-                result = self._paddle.ocr(variant_img, cls=self._use_angle_cls)
+            except Exception:
+                try:
+                    result = self._paddle.ocr(variant_img, cls=self._use_angle_cls)
+                except Exception:
+                    try:
+                        # PaddleOCR 3.x may reject cls and extra kwargs.
+                        result = self._paddle.ocr(variant_img)
+                    except Exception:
+                        if hasattr(self._paddle, "predict"):
+                            result = self._paddle.predict(variant_img)
+                        else:
+                            raise
             call_ms = (time.perf_counter() - t0) * 1000.0
             text, confidence = _parse_recognition_result(result)
             score = score_ocr_result(text, confidence)

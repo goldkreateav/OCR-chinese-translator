@@ -134,9 +134,19 @@ class OrientedTextDetector:
     def _detect_paddle(self, image_gray: np.ndarray) -> list[TextProposal]:
         try:
             result = self._paddle.ocr(image_gray, cls=False, det=True, rec=False) or []
-        except TypeError:
+        except Exception:
             # New API compatibility
-            result = self._paddle.ocr(image_gray, cls=False) or []
+            try:
+                result = self._paddle.ocr(image_gray, cls=False) or []
+            except Exception:
+                try:
+                    # PaddleOCR 3.x may reject cls/det/rec kwargs and route to predict().
+                    result = self._paddle.ocr(image_gray) or []
+                except Exception:
+                    if hasattr(self._paddle, "predict"):
+                        result = self._paddle.predict(image_gray) or []
+                    else:
+                        raise
         raw_boxes = result[0] if result else []
         proposals: list[TextProposal] = []
         for item in raw_boxes:
