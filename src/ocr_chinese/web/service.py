@@ -745,6 +745,7 @@ class ProjectService:
             ocr_device = "cpu"
         is_cuda = ocr_device == "cuda"
         cpu = int(os.cpu_count() or 4)
+        debug_raw = str(os.getenv("OCR_DEBUG_RAW_RESULTS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
         auto_workers = max(2, min(8, cpu // 2))
         workers = options.ocr_workers if options.ocr_workers is not None else auto_workers
         workers = max(1, int(workers))
@@ -763,7 +764,7 @@ class ProjectService:
                 cascade_probe_variants=2,
                 backend_cascade=bool(options.allow_fallback),
                 allow_fallback=bool(options.allow_fallback),
-                debug_raw_results=True,
+                debug_raw_results=bool(debug_raw),
                 ocr_device=ocr_device,
             )
         if mode == "balanced":
@@ -784,7 +785,7 @@ class ProjectService:
                 bridge_fallback_score_threshold=0.98,
                 backend_cascade=bool(options.allow_fallback),
                 allow_fallback=bool(options.allow_fallback),
-                debug_raw_results=True,
+                debug_raw_results=bool(debug_raw),
                 ocr_device=ocr_device,
             )
         # eco (default): keep CPU usage low for personal machines
@@ -807,7 +808,7 @@ class ProjectService:
                 bridge_fallback_score_threshold=0.98,
                 backend_cascade=bool(options.allow_fallback),
                 allow_fallback=bool(options.allow_fallback),
-                debug_raw_results=True,
+                debug_raw_results=bool(debug_raw),
                 ocr_device=ocr_device,
             )
         return RecognitionConfig(
@@ -828,7 +829,7 @@ class ProjectService:
             bridge_fallback_score_threshold=0.98,
             backend_cascade=bool(options.allow_fallback),
             allow_fallback=bool(options.allow_fallback),
-            debug_raw_results=True,
+            debug_raw_results=bool(debug_raw),
             ocr_device=ocr_device,
         )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -140,11 +141,15 @@ def main() -> None:
     args = parser.parse_args()
 
     from paddleocr import PaddleOCR  # type: ignore
+    debug_raw = str(os.getenv("OCR_DEBUG_RAW_RESULTS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
 
     # Newer PaddleX-backed pipelines expect 3-channel images.
     img = cv2.imread(str(args.image), cv2.IMREAD_COLOR)
     if img is None:
-        print(json.dumps({"text": "", "confidence": 0.0, "raw_preview": {"error": "imread_failed"}}, ensure_ascii=True))
+        payload = {"text": "", "confidence": 0.0}
+        if debug_raw:
+            payload["raw_preview"] = {"error": "imread_failed"}
+        print(json.dumps(payload, ensure_ascii=True))
         return
 
     ctor_options = [
@@ -214,13 +219,17 @@ def main() -> None:
     except Exception:
         text = ""
         conf = 0.0
-    try:
-        raw_preview = _preview_obj(result)
-    except Exception:
-        raw_preview = {"error": "preview_failed"}
+    if debug_raw:
+        try:
+            raw_preview = _preview_obj(result)
+        except Exception:
+            raw_preview = {"error": "preview_failed"}
 
     # Some Windows shells default to cp1251/cp866. Escaping avoids encoding errors.
-    sys.stdout.write(json.dumps({"text": text, "confidence": conf, "raw_preview": raw_preview}, ensure_ascii=True))
+    out = {"text": text, "confidence": conf}
+    if debug_raw:
+        out["raw_preview"] = raw_preview
+    sys.stdout.write(json.dumps(out, ensure_ascii=True))
     sys.stdout.write("\n")
 
 

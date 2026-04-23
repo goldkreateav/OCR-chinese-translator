@@ -57,7 +57,7 @@ class RecognitionConfig:
     batch_size: int = 64
     ocr_device: str = "cpu"  # cpu | cuda
     allow_fallback: bool = True
-    debug_raw_results: bool = True
+    debug_raw_results: bool = False
 
 
 def _preview_obj(obj: Any, *, max_items: int = 6, max_str: int = 400, depth: int = 0, max_depth: int = 3) -> Any:
