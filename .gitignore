@@ -17,3 +17,7 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Cursor agent metadata
+.agents/
+skills-lock.json
+
