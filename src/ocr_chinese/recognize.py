@@ -57,6 +57,55 @@ class RecognitionConfig:
     batch_size: int = 64
     ocr_device: str = "cpu"  # cpu | cuda
     allow_fallback: bool = True
+    debug_raw_results: bool = False
+
+
+def _preview_obj(obj: Any, *, max_items: int = 6, max_str: int = 400, depth: int = 0, max_depth: int = 3) -> Any:
+    """
+    Make an object JSON-ish and small for debugging logs.
+    """
+    if depth > max_depth:
+        return "<max_depth>"
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    if isinstance(obj, str):
+        s = obj
+        if len(s) > max_str:
+            s = s[:max_str] + "…"
+        return s
+    try:
+        import numpy as _np
+
+        if isinstance(obj, _np.ndarray):
+            shape = list(obj.shape)
+            return {"__ndarray__": True, "shape": shape, "dtype": str(obj.dtype)}
+    except Exception:
+        pass
+    if isinstance(obj, dict):
+        out = {"__type__": "dict", "keys": list(obj.keys())[:max_items]}
+        sample = {}
+        for k in list(obj.keys())[:max_items]:
+            sample[str(k)] = _preview_obj(obj.get(k), max_items=max_items, max_str=max_str, depth=depth + 1)
+        out["sample"] = sample
+        return out
+    if isinstance(obj, (list, tuple)):
+        items = list(obj)[:max_items]
+        return {
+            "__type__": "list" if isinstance(obj, list) else "tuple",
+            "len": len(obj),
+            "items": [_preview_obj(x, max_items=max_items, max_str=max_str, depth=depth + 1) for x in items],
+        }
+    # objects with attrs
+    try:
+        attrs = {}
+        for name in ("text", "score", "rec_text", "rec_score", "dt_polys", "dt_scores"):
+            if hasattr(obj, name):
+                attrs[name] = _preview_obj(getattr(obj, name), depth=depth + 1)
+        if attrs:
+            return {"__type__": type(obj).__name__, "attrs": attrs}
+    except Exception:
+        pass
+    return {"__type__": type(obj).__name__, "repr": _preview_obj(repr(obj), depth=depth + 1)}
 
 
 def should_use_angle_classifier(config: RecognitionConfig) -> bool:
@@ -617,16 +666,17 @@ class RegionTextRecognizer:
             text, confidence = _parse_recognition_result(result)
             score = score_ocr_result(text, confidence)
             if self.config.profile_variant_calls:
-                variant_calls.append(
-                    {
-                        "variant": variant_name,
-                        "backend": "paddleocr",
-                        "call_ms": call_ms,
-                        "score": float(score),
-                        "confidence": float(confidence),
-                        "text_len": useful_length(text),
-                    }
-                )
+                payload = {
+                    "variant": variant_name,
+                    "backend": "paddleocr",
+                    "call_ms": call_ms,
+                    "score": float(score),
+                    "confidence": float(confidence),
+                    "text_len": useful_length(text),
+                }
+                if self.config.debug_raw_results:
+                    payload["raw_preview"] = _preview_obj(result)
+                variant_calls.append(payload)
             if score > best_score:
                 best_score = score
                 best_text = text
