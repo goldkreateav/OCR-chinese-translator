@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import queue
 import sys
+import subprocess
 import threading
 import time
 import uuid
@@ -16,6 +17,7 @@ from fastapi import HTTPException, UploadFile
 
 from ..pipeline import PipelineConfig, run_mask_pipeline_with_regions
 from ..render import PdfRenderOptions, render_pdf_to_images
+from ..detect import OrientedTextDetector
 from ..recognize import RecognitionConfig, RegionTextRecognizer, extract_region_roi
 from ..translate import (
     OpenAICompatConfig,
@@ -38,6 +40,7 @@ class GenerateOptions:
     ocr_mode: str = "eco"
     ocr_workers: int | None = None
     ocr_device: str = "cpu"
+    allow_fallback: bool = False
 
 
 class ProjectService:
@@ -50,6 +53,58 @@ class ProjectService:
         self._translate_started = False
         self._generate_threads: dict[str, threading.Thread] = {}
         self._generate_lock = threading.Lock()
+
+    @staticmethod
+    def _probe_paddle_runtime() -> dict:
+        import_ok = False
+        init_ok = False
+        probe_error: str | None = None
+        try:
+            import paddleocr  # type: ignore
+
+            import_ok = True
+            version = str(getattr(paddleocr, "__version__", "unknown"))
+        except Exception as exc:
+            return {
+                "paddle_import_ok": False,
+                "paddle_init_ok": False,
+                "paddle_version": None,
+                "paddle_error": str(exc),
+            }
+
+        cmd = [
+            sys.executable,
+            "-c",
+            (
+                "from paddleocr import PaddleOCR; "
+                "PaddleOCR(lang='ch', show_log=False); "
+                "print('ok')"
+            ),
+        ]
+        env = dict(os.environ)
+        env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=float(os.getenv("OCR_PADDLE_PROBE_TIMEOUT_S", "45")),
+                env=env,
+            )
+            init_ok = proc.returncode == 0
+            if not init_ok:
+                probe_error = (proc.stderr or proc.stdout or "").strip() or f"exit_code={proc.returncode}"
+        except Exception as exc:
+            init_ok = False
+            probe_error = str(exc)
+
+        return {
+            "paddle_import_ok": import_ok,
+            "paddle_init_ok": init_ok,
+            "paddle_version": version,
+            "paddle_error": probe_error,
+        }
 
     def _ensure_translate_workers(self) -> None:
         if self._translate_started:
@@ -513,8 +568,14 @@ class ProjectService:
             config.render.backend = options.render_backend
             config.render.poppler_path = options.poppler_path
             config.detector.ocr_device = (options.ocr_device or "cpu").strip().lower()
+            config.detector.allow_fallback = bool(options.allow_fallback)
             self._tune_pipeline_config(config, options)
             rec_cfg = self._build_recognition_config(options)
+
+            # Strict Paddle-only mode validates detector/recognizer init upfront so
+            # failures are reported immediately in web status.
+            OrientedTextDetector(config.detector)
+            RegionTextRecognizer(rec_cfg)
 
             def on_progress(update: dict) -> None:
                 status_inner = self.get_status(project_id)
@@ -670,6 +731,7 @@ class ProjectService:
             if is_cuda:
                 max_workers = min(8, max(2, workers))
             return RecognitionConfig(
+                backend="paddleocr",
                 mode="hybrid",
                 use_multipass=True,
                 parallel_ocr=True,
@@ -677,6 +739,8 @@ class ProjectService:
                 batch_size=20 if is_cuda else 24,
                 parallel_min_regions=10 if is_cuda else 12,
                 cascade_probe_variants=2,
+                backend_cascade=bool(options.allow_fallback),
+                allow_fallback=bool(options.allow_fallback),
                 ocr_device=ocr_device,
             )
         if mode == "balanced":
@@ -684,6 +748,7 @@ class ProjectService:
             if is_cuda:
                 max_workers = min(6, max(2, workers))
             return RecognitionConfig(
+                backend="paddleocr",
                 mode="hybrid",
                 use_multipass=False,
                 parallel_ocr=True,
@@ -691,14 +756,17 @@ class ProjectService:
                 batch_size=22 if is_cuda else 28,
                 parallel_min_regions=8 if is_cuda else 14,
                 cascade_probe_variants=2,
-                bridge_fallback_enabled=True,
+                bridge_fallback_enabled=bool(options.allow_fallback),
                 bridge_fallback_confidence_threshold=0.82,
                 bridge_fallback_score_threshold=0.98,
+                backend_cascade=bool(options.allow_fallback),
+                allow_fallback=bool(options.allow_fallback),
                 ocr_device=ocr_device,
             )
         # eco (default): keep CPU usage low for personal machines
         if is_cuda:
             return RecognitionConfig(
+                backend="paddleocr",
                 mode="fast",
                 use_multipass=False,
                 parallel_ocr=True,
@@ -710,12 +778,15 @@ class ProjectService:
                 accept_score_threshold=1.04,
                 accept_min_length=6,
                 cascade_probe_variants=2,
-                bridge_fallback_enabled=True,
+                bridge_fallback_enabled=bool(options.allow_fallback),
                 bridge_fallback_confidence_threshold=0.82,
                 bridge_fallback_score_threshold=0.98,
+                backend_cascade=bool(options.allow_fallback),
+                allow_fallback=bool(options.allow_fallback),
                 ocr_device=ocr_device,
             )
         return RecognitionConfig(
+            backend="paddleocr",
             mode="fast",
             use_multipass=False,
             parallel_ocr=False,
@@ -727,9 +798,11 @@ class ProjectService:
             accept_score_threshold=1.04,
             accept_min_length=6,
             cascade_probe_variants=2,
-            bridge_fallback_enabled=True,
+            bridge_fallback_enabled=bool(options.allow_fallback),
             bridge_fallback_confidence_threshold=0.82,
             bridge_fallback_score_threshold=0.98,
+            backend_cascade=bool(options.allow_fallback),
+            allow_fallback=bool(options.allow_fallback),
             ocr_device=ocr_device,
         )
 
@@ -774,7 +847,7 @@ class ProjectService:
                     return region
         return None
 
-    def retry_region_ocr(self, project_id: str, region_id: str) -> dict:
+    def retry_region_ocr(self, project_id: str, region_id: str, *, allow_fallback: bool = False) -> dict:
         region = self.load_region_by_id(project_id, region_id)
         if region is None:
             raise HTTPException(status_code=404, detail="Region not found.")
@@ -838,6 +911,9 @@ class ProjectService:
             use_multipass=True,
             parallel_ocr=False,
             max_workers=1,
+            allow_fallback=bool(allow_fallback),
+            backend_cascade=bool(allow_fallback),
+            bridge_fallback_enabled=bool(allow_fallback),
         )
         recognizer = RegionTextRecognizer(rec_cfg)
         text, confidence, variant, score = recognizer.recognize_roi(roi)

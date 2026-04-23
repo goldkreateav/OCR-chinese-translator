@@ -21,6 +21,7 @@ class DetectionConfig:
     min_area: int = 16
     min_box_size: int = 4
     ocr_device: str = "cpu"  # cpu | cuda
+    allow_fallback: bool = True
 
 
 def _normalize_ocr_device(device: str | None) -> str:
@@ -92,6 +93,7 @@ class OrientedTextDetector:
                 # PaddleOCR isn't available in this environment; keep going so we can
                 # fall back to RapidOCR (or MSER as a last resort).
                 self._paddle = None
+                self._paddle_error = "paddleocr package is not importable"
             try:
                 # Older PaddleOCR API
                 self._paddle = PaddleOCR(
@@ -112,12 +114,15 @@ class OrientedTextDetector:
                 except Exception as exc:  # pragma: no cover
                     self._paddle = None
                     self._paddle_error = str(exc)
-        if RapidOCR is not None:
+        if config.allow_fallback and RapidOCR is not None:
             self._rapid = _build_rapidocr(config.ocr_device)
 
     def detect(self, image_gray: np.ndarray) -> list[TextProposal]:
         if self._paddle is not None:
             return self._detect_paddle(image_gray)
+        if not self.config.allow_fallback:
+            detail = self._paddle_error or "unknown paddle initialization error"
+            raise RuntimeError(f"PaddleOCR detector unavailable: {detail}")
         if self._rapid is not None:
             return self._detect_rapidocr(image_gray)
         return self._detect_fallback(image_gray)

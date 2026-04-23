@@ -63,11 +63,14 @@ maskpdf run "scheme.pdf" --out "output" --dpi 400 --render-backend poppler --pop
 
 #### OCR backends
 
-The project supports:
+For Web UI (`maskpdf web`), the default is now **strict Paddle-only**:
 
-- **RapidOCR (ONNX Runtime)**: easiest to install; used by default in many setups
-- **PaddleOCR**: can be used for recognition/detection when installed
-- **Paddle bridge mode**: if PaddleOCR runtime is not importable in the current env, you can run it via a separate python interpreter
+- if Paddle detector/recognizer cannot initialize, generation fails with a clear error
+- no automatic RapidOCR/MSER fallback unless you explicitly pass `--allow-fallback`
+- use `/api/version` and `/api/health/paddle` for runtime diagnostics
+
+Paddle bridge mode is still supported: if PaddleOCR runtime is not importable in the current env,
+you can run Paddle via a separate python interpreter.
 
 Bridge env vars (optional):
 
@@ -78,8 +81,15 @@ export OCR_PADDLE_BRIDGE_SCRIPT="/absolute/path/to/scripts/paddle_ocr_bridge.py"
 
 Notes:
 
-- If PaddleOCR is unavailable, the app will fall back to RapidOCR automatically for region text extraction.
 - For best speed, keep `mode=fast` (default) unless you explicitly need `accurate`.
+- For Paddle runtime issues on some Linux hosts, set:
+
+```bash
+export FLAGS_use_mkldnn=0
+export FLAGS_use_onednn=0
+export FLAGS_enable_pir_api=0
+export FLAGS_enable_pir_in_executor=0
+```
 
 ### Windows (quick)
 
@@ -130,6 +140,12 @@ Start server:
 maskpdf web --host 127.0.0.1 --port 8000
 ```
 
+Allow non-Paddle fallbacks (RapidOCR/MSER) explicitly:
+
+```bash
+maskpdf web --host 127.0.0.1 --port 8000 --allow-fallback
+```
+
 With explicit Poppler:
 
 ```bash
@@ -150,7 +166,8 @@ Notes for CUDA mode:
 
 Then open [http://127.0.0.1:8000](http://127.0.0.1:8000), upload PDF, click **Generate Mask + OCR**, and click any highlighted region to open copyable text.
 
-Note: if PaddleOCR runtime is unavailable (for example `paddle` is not installed), the app automatically falls back to `RapidOCR` for region text extraction.
+Note: by default Web UI is strict Paddle-only and returns an error if Paddle cannot initialize.
+Use `--allow-fallback` only when you intentionally want RapidOCR/MSER fallback behavior.
 
 ## Labeling setup
 

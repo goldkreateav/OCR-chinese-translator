@@ -56,6 +56,7 @@ class RecognitionConfig:
     max_workers: int = 1
     batch_size: int = 64
     ocr_device: str = "cpu"  # cpu | cuda
+    allow_fallback: bool = True
 
 
 def should_use_angle_classifier(config: RecognitionConfig) -> bool:
@@ -119,10 +120,13 @@ class RegionTextRecognizer:
         self._paddle = None
         self._paddle_bridge: _PaddleOcrBridge | None = None
         self._rapid = None
+        self._init_error: str | None = None
         self._last_trace: dict[str, Any] = {}
         if config.backend != "paddleocr":
             if config.backend == "rapidocr" and RapidOCR is not None:
                 self._rapid = _build_rapidocr(config.ocr_device)
+                if self._rapid is None and not config.allow_fallback:
+                    raise RuntimeError("RapidOCR backend is unavailable in strict mode.")
             # Allow optional high-quality fallback through external Paddle bridge.
             if config.bridge_fallback_enabled and (config.paddle_python or os.getenv("OCR_PADDLE_PYTHON")):
                 self._paddle_bridge = _maybe_build_paddle_bridge(config)
@@ -132,8 +136,12 @@ class RegionTextRecognizer:
         # incompatible or trigger heavyweight initialization).
         if config.paddle_python or os.getenv("OCR_PADDLE_PYTHON"):
             self._paddle_bridge = _maybe_build_paddle_bridge(config)
-            if self._paddle_bridge is None and RapidOCR is not None:
+            if self._paddle_bridge is None:
+                self._init_error = "Paddle bridge is configured but unavailable."
+            if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
                 self._rapid = _build_rapidocr(config.ocr_device)
+            if self._paddle_bridge is None and not config.allow_fallback:
+                raise RuntimeError(self._init_error or "Paddle bridge is unavailable in strict mode.")
             return
         try:
             from paddleocr import PaddleOCR  # type: ignore
@@ -141,8 +149,12 @@ class RegionTextRecognizer:
             PaddleOCR = None
         if PaddleOCR is None:
             self._paddle_bridge = _maybe_build_paddle_bridge(config)
-            if self._paddle_bridge is None and RapidOCR is not None:
-                self._rapid = RapidOCR()
+            if self._paddle_bridge is None:
+                self._init_error = "paddleocr package is not importable and bridge is unavailable."
+            if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
+                self._rapid = _build_rapidocr(config.ocr_device)
+            if self._paddle_bridge is None and not config.allow_fallback:
+                raise RuntimeError(self._init_error)
             return
         try:
             self._paddle = PaddleOCR(
@@ -155,11 +167,16 @@ class RegionTextRecognizer:
         except Exception:
             try:
                 self._paddle = PaddleOCR(use_angle_cls=self._use_angle_cls, lang=config.lang)
-            except Exception:
+            except Exception as exc:
                 self._paddle = None
                 self._paddle_bridge = _maybe_build_paddle_bridge(config)
-                if self._paddle_bridge is None and RapidOCR is not None:
+                self._init_error = str(exc)
+                if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
                     self._rapid = _build_rapidocr(config.ocr_device)
+                if self._paddle_bridge is None and not config.allow_fallback:
+                    raise RuntimeError(
+                        f"PaddleOCR recognizer initialization failed in strict mode: {self._init_error}"
+                    )
 
     def consume_last_trace(self) -> dict[str, Any]:
         trace = dict(self._last_trace)
@@ -461,6 +478,9 @@ class RegionTextRecognizer:
                 )
                 return rapid_text, rapid_conf, rapid_variant, rapid_score
         if self._paddle is None and self._paddle_bridge is None:
+            if not self.config.allow_fallback:
+                detail = self._init_error or "No Paddle backend is available."
+                raise RuntimeError(f"Paddle recognition backend unavailable: {detail}")
             if self._rapid is not None:
                 return self._recognize_rapid_variants(variants)
             return "", 0.0, "none", 0.0

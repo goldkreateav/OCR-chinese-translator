@@ -25,6 +25,7 @@ def create_app(
     default_ocr_mode: str = "eco",
     default_ocr_workers: int = 1,
     default_ocr_device: str = "cpu",
+    allow_fallback: bool = False,
 ) -> FastAPI:
     package_dir = Path(__file__).resolve().parent
     static_dir = package_dir / "static"
@@ -37,6 +38,7 @@ def create_app(
     app.state.default_ocr_mode = default_ocr_mode
     app.state.default_ocr_workers = default_ocr_workers
     app.state.default_ocr_device = default_ocr_device
+    app.state.allow_fallback = bool(allow_fallback)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")
@@ -56,15 +58,24 @@ def create_app(
         except Exception:
             v = "unknown"
         runtime_probe = service._probe_ocr_runtime()
+        paddle_probe = service._probe_paddle_runtime()
         return JSONResponse(
             {
                 "app_version": v,
                 "quality_bridge_enabled": bool(os.getenv("OCR_PADDLE_PYTHON")),
                 "bridge_python": os.getenv("OCR_PADDLE_PYTHON"),
                 "default_ocr_device": app.state.default_ocr_device,
+                "allow_fallback": bool(app.state.allow_fallback),
                 **runtime_probe,
+                **paddle_probe,
             }
         )
+
+    @app.get("/api/health/paddle")
+    async def health_paddle() -> JSONResponse:
+        payload = service._probe_paddle_runtime()
+        payload["allow_fallback"] = bool(app.state.allow_fallback)
+        return JSONResponse(payload)
 
     @app.post("/api/projects", response_model=ProjectCreateResponse)
     async def create_project(file: UploadFile = File(...)) -> ProjectCreateResponse:
@@ -111,6 +122,7 @@ def create_app(
             ocr_mode=ocr_mode,
             ocr_workers=ocr_workers,
             ocr_device=ocr_device,
+            allow_fallback=bool(app.state.allow_fallback),
         )
         payload = service.start_generate_background(project_id, options)
         return JSONResponse(payload)
@@ -175,7 +187,11 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/regions/{region_id}/retry")
     async def retry_region(project_id: str, region_id: str) -> JSONResponse:
-        payload = service.retry_region_ocr(project_id, region_id)
+        payload = service.retry_region_ocr(
+            project_id,
+            region_id,
+            allow_fallback=bool(app.state.allow_fallback),
+        )
         return JSONResponse(payload)
 
     return app

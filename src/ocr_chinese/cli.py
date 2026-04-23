@@ -96,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="cpu",
         help="OCR inference device for RapidOCR backends.",
     )
+    web_cmd.add_argument(
+        "--allow-fallback",
+        action="store_true",
+        help=(
+            "Allow non-Paddle fallbacks (RapidOCR/MSER). "
+            "By default web generation is strict Paddle-only and fails on Paddle errors."
+        ),
+    )
     return parser
 
 
@@ -162,6 +170,7 @@ def main() -> None:
             default_ocr_mode=args.ocr_mode,
             default_ocr_workers=args.ocr_workers,
             default_ocr_device=args.ocr_device,
+            allow_fallback=args.allow_fallback,
         )
         uvicorn.run(app, host=args.host, port=args.port)
         return
