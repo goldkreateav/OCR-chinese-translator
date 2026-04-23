@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
-import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
-import htm from "https://esm.sh/htm@3.1.1";
+import "./tailwind.css";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import htm from "htm";
 
 const html = htm.bind(React.createElement);
 
@@ -251,6 +252,7 @@ function App() {
   const [pages, setPages] = useState([]);
   const [pageIndex, setPageIndex] = useState(0);
   const [statusPayload, setStatusPayload] = useState(null);
+  const [runtimeInfo, setRuntimeInfo] = useState(null);
   const [translationByPage, setTranslationByPage] = useState({});
   const [assetsByPage, setAssetsByPage] = useState({});
   const [maskOkByPage, setMaskOkByPage] = useState({});
@@ -274,6 +276,7 @@ function App() {
   const [uploadFile, setUploadFile] = useState(null);
   const [dpi, setDpi] = useState(400);
   const [ocrMode, setOcrMode] = useState("eco");
+  const [ocrDevice, setOcrDevice] = useState("cpu");
 
   const etaModel = useEtaModel();
   const routeRef = useRef(route);
@@ -414,11 +417,23 @@ function App() {
         const appVer = payload.app_version || "unknown";
         const bridge = payload.quality_bridge_enabled ? "bridge:on" : "bridge:off";
         setVersion(`${appVer} (${bridge})`);
+        setRuntimeInfo(payload || null);
       } catch (_) {
         // noop
       }
     })();
   }, []);
+
+  const derivedRequestedDevice =
+    String(statusPayload?.ocr_runtime?.requested_device || ocrDevice || "cpu").toLowerCase() === "cuda" ? "cuda" : "cpu";
+  const derivedCudaAvailable = Boolean(
+    statusPayload?.ocr_runtime?.ort_cuda_available ?? runtimeInfo?.ort_cuda_available
+  );
+  const derivedEffectiveDevice = statusPayload?.ocr_runtime?.effective_device
+    ? String(statusPayload.ocr_runtime.effective_device)
+    : derivedRequestedDevice === "cuda" && derivedCudaAvailable
+      ? "cuda"
+      : "cpu";
 
   async function fetchStatus() {
     if (!projectId) return;
@@ -648,6 +663,7 @@ function App() {
       body: JSON.stringify({
         dpi: Number(dpi || 400),
         ocr_mode: ocrMode,
+        ocr_device: ocrDevice,
       }),
     });
     if (!resp.ok) {
@@ -704,6 +720,7 @@ function App() {
         app_version: version,
         dpi: Number(dpi || 400),
         ocr_mode: String(ocrMode || "eco"),
+        ocr_device: String(ocrDevice || "cpu"),
       },
       pages: [],
       regionsByPage: {},
@@ -959,6 +976,17 @@ function App() {
                         <option value="max">max</option>
                       </select>
                     </label>
+                    <label className="block space-y-2">
+                      <span className="text-sm text-sollers-gray">OCR device</span>
+                      <select
+                        value=${ocrDevice}
+                        onChange=${(e) => setOcrDevice(e.target.value)}
+                        className="w-full rounded-xl border border-sollers-grayBorder p-2"
+                      >
+                        <option value="cpu">cpu</option>
+                        <option value="cuda">cuda (NVIDIA)</option>
+                      </select>
+                    </label>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
                         onClick=${handleUpload}
@@ -993,6 +1021,10 @@ function App() {
                     <p><span className="text-sollers-gray">Project ID:</span> <span className="mono">${projectId || "-"}</span></p>
                     <p><span className="text-sollers-gray">Файл:</span> <span className="mono">${filename || "-"}</span></p>
                     <p><span className="text-sollers-gray">Версия:</span> <span className="mono">${version}</span></p>
+                    <p><span className="text-sollers-gray">OCR device (request):</span> <span className="mono">${derivedRequestedDevice}</span></p>
+                    <p><span className="text-sollers-gray">OCR device (effective):</span> <span className=${`mono ${derivedEffectiveDevice === "cuda" ? "text-sollers-green" : "text-sollers-red"}`}>${derivedEffectiveDevice}</span></p>
+                    <p><span className="text-sollers-gray">ORT CUDA available:</span> <span className=${`mono ${derivedCudaAvailable ? "text-sollers-green" : "text-sollers-red"}`}>${derivedCudaAvailable ? "yes" : "no"}</span></p>
+                    <p><span className="text-sollers-gray">Python:</span> <span className="mono">${statusPayload?.ocr_runtime?.python_executable || runtimeInfo?.python_executable || "-"}</span></p>
                     <p>
                       <span className="text-sollers-gray">API:</span>
                       <span className=${`ml-2 font-medium ${connectionOk ? "text-sollers-green" : "text-sollers-red"}`}>
