@@ -228,19 +228,23 @@ class OrientedTextDetector:
         return self._detect_fallback(image_gray)
 
     def _detect_paddle(self, image_gray: np.ndarray) -> list[TextProposal]:
+        # PaddleOCR 3.x/PaddleX pipelines expect 3-channel images.
+        image_input = image_gray
+        if isinstance(image_gray, np.ndarray) and image_gray.ndim == 2:
+            image_input = cv2.cvtColor(image_gray, cv2.COLOR_GRAY2BGR)
         try:
-            result = self._paddle.ocr(image_gray, cls=False, det=True, rec=False) or []
+            result = self._paddle.ocr(image_input, cls=False, det=True, rec=False) or []
         except Exception:
             # New API compatibility
             try:
-                result = self._paddle.ocr(image_gray, cls=False) or []
+                result = self._paddle.ocr(image_input, cls=False) or []
             except Exception:
                 try:
                     # PaddleOCR 3.x may reject cls/det/rec kwargs and route to predict().
-                    result = self._paddle.ocr(image_gray) or []
+                    result = self._paddle.ocr(image_input) or []
                 except Exception:
                     if hasattr(self._paddle, "predict"):
-                        predicted = self._paddle.predict(image_gray)
+                        predicted = self._paddle.predict(image_input)
                         try:
                             result = list(predicted)
                         except Exception:

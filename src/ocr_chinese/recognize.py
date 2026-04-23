@@ -560,24 +560,28 @@ class RegionTextRecognizer:
         best_score = -1.0
         variant_calls: list[dict[str, Any]] = []
         for variant_name, variant_img in variants:
+            # PaddleOCR 3.x/PaddleX pipelines expect 3-channel images.
+            paddle_img = variant_img
+            if isinstance(variant_img, np.ndarray) and variant_img.ndim == 2:
+                paddle_img = cv2.cvtColor(variant_img, cv2.COLOR_GRAY2BGR)
             t0 = time.perf_counter()
             try:
                 result = self._paddle.ocr(
-                    variant_img,
+                    paddle_img,
                     det=False,
                     rec=True,
                     cls=self._use_angle_cls,
                 )
             except Exception:
                 try:
-                    result = self._paddle.ocr(variant_img, cls=self._use_angle_cls)
+                    result = self._paddle.ocr(paddle_img, cls=self._use_angle_cls)
                 except Exception:
                     try:
                         # PaddleOCR 3.x may reject cls and extra kwargs.
-                        result = self._paddle.ocr(variant_img)
+                        result = self._paddle.ocr(paddle_img)
                     except Exception:
                         if hasattr(self._paddle, "predict"):
-                            result = self._paddle.predict(variant_img)
+                            result = self._paddle.predict(paddle_img)
                         else:
                             raise
             call_ms = (time.perf_counter() - t0) * 1000.0
