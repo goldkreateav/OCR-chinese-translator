@@ -1,0 +1,2020 @@
+{
+  "config": {
+    "backend": "paddleocr",
+    "paddle_python": null,
+    "paddle_bridge_script": null,
+    "lang": "ch",
+    "min_confidence": 0.0,
+    "min_text_length": 1,
+    "use_multipass": true,
+    "mode": "accurate",
+    "fast_confidence_threshold": 0.74,
+    "retry_enabled": true,
+    "retry_confidence_threshold": 0.72,
+    "accept_confidence_threshold": 0.9,
+    "accept_score_threshold": 1.02,
+    "accept_min_length": 6,
+    "backend_cascade": false,
+    "cascade_probe_variants": 2,
+    "parallel_min_regions": 16,
+    "profile_ocr": true,
+    "profile_variant_calls": true,
+    "parallel_ocr": false,
+    "max_workers": 1,
+    "batch_size": 64
+  },
+  "results": [
+    {
+      "input_variant": "full:invert",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9993730187416077,
+      "score": 1.0973730187416078,
+      "raw_score": 1.0973730187416078,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2777.6660000090487,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2777.6573000010103,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9993730187416077,
+        "selected_score": 1.0973730187416078,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2777.614300008281,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9993730187416077,
+            "winner_score": 1.0973730187416078,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2777.609600001597,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9993730187416077,
+              "winner_score": 1.0973730187416078,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2777.585200004978,
+                  "score": 1.0973730187416078,
+                  "confidence": 0.9993730187416077,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:invert_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9993730187416077,
+      "score": 1.0973730187416078,
+      "raw_score": 1.0973730187416078,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5616.773300003842,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5616.7646999965655,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9993730187416077,
+        "selected_score": 1.0973730187416078,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5616.727300002822,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9993730187416077,
+            "winner_score": 1.0973730187416078,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5616.722599996137,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9993730187416077,
+              "winner_score": 1.0973730187416078,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2767.1628999960376,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2849.52269999485,
+                  "score": 1.0973730187416078,
+                  "confidence": 0.9993730187416077,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:invert",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9993730187416077,
+      "score": 1.0973730187416078,
+      "raw_score": 1.0973730187416078,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2797.6205999875674,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2797.6121000101557,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9993730187416077,
+        "selected_score": 1.0973730187416078,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2797.574000011082,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9993730187416077,
+            "winner_score": 1.0973730187416078,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2797.569400005159,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9993730187416077,
+              "winner_score": 1.0973730187416078,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2797.5427999917883,
+                  "score": 1.0973730187416078,
+                  "confidence": 0.9993730187416077,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:invert_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9993730187416077,
+      "score": 1.0973730187416078,
+      "raw_score": 1.0973730187416078,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5674.106799997389,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5674.099099996965,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9993730187416077,
+        "selected_score": 1.0973730187416078,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5674.062100006267,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9993730187416077,
+            "winner_score": 1.0973730187416078,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5674.057799988077,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9993730187416077,
+              "winner_score": 1.0973730187416078,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2859.977300002356,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2814.0348000015365,
+                  "score": 1.0973730187416078,
+                  "confidence": 0.9993730187416077,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:sharpen",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9992131590843201,
+      "score": 1.0972131590843202,
+      "raw_score": 1.0972131590843202,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2824.3129000038607,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2824.3046999996295,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9992131590843201,
+        "selected_score": 1.0972131590843202,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2824.267100004363,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9992131590843201,
+            "winner_score": 1.0972131590843202,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2824.2623999976786,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9992131590843201,
+              "winner_score": 1.0972131590843202,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2824.23579999886,
+                  "score": 1.0972131590843202,
+                  "confidence": 0.9992131590843201,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:sharpen_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9992131590843201,
+      "score": 1.0972131590843202,
+      "raw_score": 1.0972131590843202,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5761.142000003019,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5761.133599997265,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9992131590843201,
+        "selected_score": 1.0972131590843202,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5761.096999995061,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9992131590843201,
+            "winner_score": 1.0972131590843202,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5761.092200002167,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9992131590843201,
+              "winner_score": 1.0972131590843202,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2805.4523000027984,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2955.601299996488,
+                  "score": 1.0972131590843202,
+                  "confidence": 0.9992131590843201,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:sharpen",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9992131590843201,
+      "score": 1.0972131590843202,
+      "raw_score": 1.0972131590843202,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 3005.2705999987666,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 3005.2605000091717,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9992131590843201,
+        "selected_score": 1.0972131590843202,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 3005.222899999353,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9992131590843201,
+            "winner_score": 1.0972131590843202,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 3005.2181000064593,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9992131590843201,
+              "winner_score": 1.0972131590843202,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 3005.1880000100937,
+                  "score": 1.0972131590843202,
+                  "confidence": 0.9992131590843201,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:sharpen_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9992131590843201,
+      "score": 1.0972131590843202,
+      "raw_score": 1.0972131590843202,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5728.667600007611,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5728.659100001096,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9992131590843201,
+        "selected_score": 1.0972131590843202,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5728.614000006928,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9992131590843201,
+            "winner_score": 1.0972131590843202,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5728.609799989499,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9992131590843201,
+              "winner_score": 1.0972131590843202,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2885.1200000062818,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2843.452300003264,
+                  "score": 1.0972131590843202,
+                  "confidence": 0.9992131590843201,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:denoise",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991979002952576,
+      "score": 1.0971979002952577,
+      "raw_score": 1.0971979002952577,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2862.055000005057,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2862.0462999970187,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9991979002952576,
+        "selected_score": 1.0971979002952577,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2862.008500000229,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9991979002952576,
+            "winner_score": 1.0971979002952577,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2862.0036999927834,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9991979002952576,
+              "winner_score": 1.0971979002952577,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2861.9785999908345,
+                  "score": 1.0971979002952577,
+                  "confidence": 0.9991979002952576,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:denoise_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991979002952576,
+      "score": 1.0971979002952577,
+      "raw_score": 1.0971979002952577,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5581.5462000027765,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5581.53830000083,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9991979002952576,
+        "selected_score": 1.0971979002952577,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5581.501000007847,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9991979002952576,
+            "winner_score": 1.0971979002952577,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5581.4964000019245,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9991979002952576,
+              "winner_score": 1.0971979002952577,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2794.4023000018205,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2787.0571999956155,
+                  "score": 1.0971979002952577,
+                  "confidence": 0.9991979002952576,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:denoise",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991979002952576,
+      "score": 1.0971979002952577,
+      "raw_score": 1.0971979002952577,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2816.3502999959746,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2816.3399000040954,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9991979002952576,
+        "selected_score": 1.0971979002952577,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2816.301900005783,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9991979002952576,
+            "winner_score": 1.0971979002952577,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2816.2959999899613,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9991979002952576,
+              "winner_score": 1.0971979002952577,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2816.2676000065403,
+                  "score": 1.0971979002952577,
+                  "confidence": 0.9991979002952576,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:denoise_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991979002952576,
+      "score": 1.0971979002952577,
+      "raw_score": 1.0971979002952577,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5667.999599987525,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5667.991000009351,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9991979002952576,
+        "selected_score": 1.0971979002952577,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5667.926399997668,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9991979002952576,
+            "winner_score": 1.0971979002952577,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5667.921899992507,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9991979002952576,
+              "winner_score": 1.0971979002952577,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2816.765600000508,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2851.120400009677,
+                  "score": 1.0971979002952577,
+                  "confidence": 0.9991979002952576,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "fast:baseline",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991840124130249,
+      "score": 1.097184012413025,
+      "raw_score": 1.097184012413025,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2822.4755999981426,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2822.4646000016946,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9991840124130249,
+        "selected_score": 1.097184012413025,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2822.437800001353,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9991840124130249,
+            "winner_score": 1.097184012413025,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2822.430300002452,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9991840124130249,
+              "winner_score": 1.097184012413025,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2822.3237000056542,
+                  "score": 1.097184012413025,
+                  "confidence": 0.9991840124130249,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "fast:baseline_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991840124130249,
+      "score": 1.097184012413025,
+      "raw_score": 1.097184012413025,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5641.390199991292,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5641.380699991714,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9991840124130249,
+        "selected_score": 1.097184012413025,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5641.339499998139,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9991840124130249,
+            "winner_score": 1.097184012413025,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5641.326600001776,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9991840124130249,
+              "winner_score": 1.097184012413025,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2804.739300001529,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2836.54019999085,
+                  "score": 1.097184012413025,
+                  "confidence": 0.9991840124130249,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:baseline",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991840124130249,
+      "score": 1.097184012413025,
+      "raw_score": 1.097184012413025,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2880.7692999980645,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2880.760800006101,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9991840124130249,
+        "selected_score": 1.097184012413025,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2880.7243000046583,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9991840124130249,
+            "winner_score": 1.097184012413025,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2880.719799999497,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9991840124130249,
+              "winner_score": 1.097184012413025,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2880.6910999992397,
+                  "score": 1.097184012413025,
+                  "confidence": 0.9991840124130249,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:baseline_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991840124130249,
+      "score": 1.097184012413025,
+      "raw_score": 1.097184012413025,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5683.831899994402,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5683.8235000032,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9991840124130249,
+        "selected_score": 1.097184012413025,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5683.7845999980345,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9991840124130249,
+            "winner_score": 1.097184012413025,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5683.780100007425,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9991840124130249,
+              "winner_score": 1.097184012413025,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2823.9934000012,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2859.748299990315,
+                  "score": 1.097184012413025,
+                  "confidence": 0.9991840124130249,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:contrast",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991694688796997,
+      "score": 1.0971694688796998,
+      "raw_score": 1.0971694688796998,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2979.925899999216,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2979.917300006491,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9991694688796997,
+        "selected_score": 1.0971694688796998,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2979.87870000361,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9991694688796997,
+            "winner_score": 1.0971694688796998,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2979.87429999921,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9991694688796997,
+              "winner_score": 1.0971694688796998,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2979.844300003606,
+                  "score": 1.0971694688796998,
+                  "confidence": 0.9991694688796997,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:contrast_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991694688796997,
+      "score": 1.0971694688796998,
+      "raw_score": 1.0971694688796998,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5755.684899995686,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5755.676400003722,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9991694688796997,
+        "selected_score": 1.0971694688796998,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5755.6362000032095,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9991694688796997,
+            "winner_score": 1.0971694688796998,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5755.632100001094,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9991694688796997,
+              "winner_score": 1.0971694688796998,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2891.211399997701,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2864.3802000005962,
+                  "score": 1.0971694688796998,
+                  "confidence": 0.9991694688796997,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:contrast",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991694688796997,
+      "score": 1.0971694688796998,
+      "raw_score": 1.0971694688796998,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2837.828699994134,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2837.81949999684,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9991694688796997,
+        "selected_score": 1.0971694688796998,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2837.7814999985276,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9991694688796997,
+            "winner_score": 1.0971694688796998,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2837.7762000018265,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9991694688796997,
+              "winner_score": 1.0971694688796998,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2837.7490999992006,
+                  "score": 1.0971694688796998,
+                  "confidence": 0.9991694688796997,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:contrast_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9991694688796997,
+      "score": 1.0971694688796998,
+      "raw_score": 1.0971694688796998,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5684.187200007727,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5684.178800001973,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9991694688796997,
+        "selected_score": 1.0971694688796998,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5684.139999997569,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9991694688796997,
+            "winner_score": 1.0971694688796998,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5684.135899995454,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9991694688796997,
+              "winner_score": 1.0971694688796998,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2871.1167000001296,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2812.978900008602,
+                  "score": 1.0971694688796998,
+                  "confidence": 0.9991694688796997,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:binarize",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9987248182296753,
+      "score": 1.0967248182296754,
+      "raw_score": 1.0967248182296754,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2825.9089999919524,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2825.9009000030346,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9987248182296753,
+        "selected_score": 1.0967248182296754,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2825.863999998546,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9987248182296753,
+            "winner_score": 1.0967248182296754,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2825.8595000079367,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9987248182296753,
+              "winner_score": 1.0967248182296754,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2825.832500006072,
+                  "score": 1.0967248182296754,
+                  "confidence": 0.9987248182296753,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:binarize_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9987248182296753,
+      "score": 1.0967248182296754,
+      "raw_score": 1.0967248182296754,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5643.950699988636,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5643.941800008179,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9987248182296753,
+        "selected_score": 1.0967248182296754,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5643.90270000149,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9987248182296753,
+            "winner_score": 1.0967248182296754,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5643.8980999955675,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9987248182296753,
+              "winner_score": 1.0967248182296754,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2855.6749999988824,
+                  "score": 0.2124730064868927,
+                  "confidence": 0.1984730064868927,
+                  "text_len": 1
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2788.167299993802,
+                  "score": 1.0967248182296754,
+                  "confidence": 0.9987248182296753,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:binarize",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9987248182296753,
+      "score": 1.0967248182296754,
+      "raw_score": 1.0967248182296754,
+      "chosen_variant": "baseline",
+      "elapsed_ms": 2801.9042999949306,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 2801.8931000115117,
+        "selected_variant": "baseline",
+        "selected_confidence": 0.9987248182296753,
+        "selected_score": 1.0967248182296754,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 2801.8481000035536,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9987248182296753,
+            "winner_score": 1.0967248182296754,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 2801.8424000038067,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9987248182296753,
+              "winner_score": 1.0967248182296754,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2801.8105999944964,
+                  "score": 1.0967248182296754,
+                  "confidence": 0.9987248182296753,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:binarize_rotate180",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9987248182296753,
+      "score": 1.0967248182296754,
+      "raw_score": 1.0967248182296754,
+      "chosen_variant": "baseline_rotate180",
+      "elapsed_ms": 5672.460299989325,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 5672.450500002014,
+        "selected_variant": "baseline_rotate180",
+        "selected_confidence": 0.9987248182296753,
+        "selected_score": 1.0967248182296754,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5672.401100004208,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9987248182296753,
+            "winner_score": 1.0967248182296754,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5672.396599999047,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9987248182296753,
+              "winner_score": 1.0967248182296754,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2796.872599996277,
+                  "score": 0.2124730064868927,
+                  "confidence": 0.1984730064868927,
+                  "text_len": 1
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2875.474000000395,
+                  "score": 1.0967248182296754,
+                  "confidence": 0.9987248182296753,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "retry:line_suppressed_rotate180",
+      "text": "非磨区及齿廓",
+      "confidence": 0.968080461025238,
+      "score": 1.0520804610252381,
+      "raw_score": 1.0520804610252381,
+      "chosen_variant": "binarize_rotate180",
+      "elapsed_ms": 17013.28489999287,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 17013.265200002934,
+        "selected_variant": "binarize_rotate180",
+        "selected_confidence": 0.968080461025238,
+        "selected_score": 1.0520804610252381,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5657.540600004722,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9177669882774353,
+            "winner_score": 1.0017669882774354,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5657.535899998038,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9177669882774353,
+              "winner_score": 1.0017669882774354,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2817.4843000015244,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2840.0145000050543,
+                  "score": 1.0017669882774354,
+                  "confidence": 0.9177669882774353,
+                  "text_len": 6
+                }
+              ]
+            }
+          },
+          {
+            "stage": "full",
+            "variant_count": 12,
+            "elapsed_ms": 11315.15579999541,
+            "winner_variant": "binarize_rotate180",
+            "winner_confidence": 0.968080461025238,
+            "winner_score": 1.0520804610252381,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 11315.150399997947,
+              "variant_count": 12,
+              "winner_variant": "binarize_rotate180",
+              "winner_confidence": 0.968080461025238,
+              "winner_score": 1.0520804610252381,
+              "variant_calls": [
+                {
+                  "variant": "contrast",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2799.905799998669,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "contrast_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2870.743699997547,
+                  "score": 1.0078040461540223,
+                  "confidence": 0.9098040461540222,
+                  "text_len": 7
+                },
+                {
+                  "variant": "binarize",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2808.0206000013277,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "binarize_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2836.4050000091083,
+                  "score": 1.0520804610252381,
+                  "confidence": 0.968080461025238,
+                  "text_len": 6
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:line_suppressed_rotate180",
+      "text": "非磨区及齿廓",
+      "confidence": 0.968080461025238,
+      "score": 1.0520804610252381,
+      "raw_score": 1.0520804610252381,
+      "chosen_variant": "binarize_rotate180",
+      "elapsed_ms": 17117.80710000312,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 17117.624299993622,
+        "selected_variant": "binarize_rotate180",
+        "selected_confidence": 0.968080461025238,
+        "selected_score": 1.0520804610252381,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5663.75710000284,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9177669882774353,
+            "winner_score": 1.0017669882774354,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5663.752399996156,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9177669882774353,
+              "winner_score": 1.0017669882774354,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2834.0019999886863,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2829.712999999174,
+                  "score": 1.0017669882774354,
+                  "confidence": 0.9177669882774353,
+                  "text_len": 6
+                }
+              ]
+            }
+          },
+          {
+            "stage": "full",
+            "variant_count": 12,
+            "elapsed_ms": 11412.76829999697,
+            "winner_variant": "binarize_rotate180",
+            "winner_confidence": 0.968080461025238,
+            "winner_score": 1.0520804610252381,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 11412.76310000103,
+              "variant_count": 12,
+              "winner_variant": "binarize_rotate180",
+              "winner_confidence": 0.968080461025238,
+              "winner_score": 1.0520804610252381,
+              "variant_calls": [
+                {
+                  "variant": "contrast",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2828.749099993729,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "contrast_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2869.527200004086,
+                  "score": 1.0078040461540223,
+                  "confidence": 0.9098040461540222,
+                  "text_len": 7
+                },
+                {
+                  "variant": "binarize",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2910.488699999405,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "binarize_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2803.9255000039702,
+                  "score": 1.0520804610252381,
+                  "confidence": 0.968080461025238,
+                  "text_len": 6
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:line_suppressed_rotate180",
+      "text": "非磨区及齿廓",
+      "confidence": 0.968080461025238,
+      "score": 1.0520804610252381,
+      "raw_score": 1.0520804610252381,
+      "chosen_variant": "binarize_rotate180",
+      "elapsed_ms": 17215.613699998357,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 17215.59769999294,
+        "selected_variant": "binarize_rotate180",
+        "selected_confidence": 0.968080461025238,
+        "selected_score": 1.0520804610252381,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5789.574000009452,
+            "winner_variant": "baseline_rotate180",
+            "winner_confidence": 0.9177669882774353,
+            "winner_score": 1.0017669882774354,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5789.569199987454,
+              "variant_count": 2,
+              "winner_variant": "baseline_rotate180",
+              "winner_confidence": 0.9177669882774353,
+              "winner_score": 1.0017669882774354,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2907.361799996579,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2882.168600001023,
+                  "score": 1.0017669882774354,
+                  "confidence": 0.9177669882774353,
+                  "text_len": 6
+                }
+              ]
+            }
+          },
+          {
+            "stage": "full",
+            "variant_count": 12,
+            "elapsed_ms": 11386.420399998315,
+            "winner_variant": "binarize_rotate180",
+            "winner_confidence": 0.968080461025238,
+            "winner_score": 1.0520804610252381,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 11386.415100001614,
+              "variant_count": 12,
+              "winner_variant": "binarize_rotate180",
+              "winner_confidence": 0.968080461025238,
+              "winner_score": 1.0520804610252381,
+              "variant_calls": [
+                {
+                  "variant": "contrast",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2831.1225999932503,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "contrast_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2825.0216000014916,
+                  "score": 1.0078040461540223,
+                  "confidence": 0.9098040461540222,
+                  "text_len": 7
+                },
+                {
+                  "variant": "binarize",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2900.836500004516,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "binarize_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2829.355599998962,
+                  "score": 1.0520804610252381,
+                  "confidence": 0.968080461025238,
+                  "text_len": 6
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "retry:line_suppressed",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9280468225479126,
+      "score": 1.0260468225479127,
+      "raw_score": 1.0260468225479127,
+      "chosen_variant": "sharpen",
+      "elapsed_ms": 25692.623499999172,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 25692.603700008476,
+        "selected_variant": "sharpen",
+        "selected_confidence": 0.9280468225479126,
+        "selected_score": 1.0260468225479127,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5639.355699997395,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9177669882774353,
+            "winner_score": 1.0017669882774354,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5639.347700009239,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9177669882774353,
+              "winner_score": 1.0017669882774354,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2808.490299998084,
+                  "score": 1.0017669882774354,
+                  "confidence": 0.9177669882774353,
+                  "text_len": 6
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2830.8207000081893,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                }
+              ]
+            }
+          },
+          {
+            "stage": "full",
+            "variant_count": 12,
+            "elapsed_ms": 20012.401600004523,
+            "winner_variant": "sharpen",
+            "winner_confidence": 0.9280468225479126,
+            "winner_score": 1.0260468225479127,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 20012.396000005538,
+              "variant_count": 12,
+              "winner_variant": "sharpen",
+              "winner_confidence": 0.9280468225479126,
+              "winner_score": 1.0260468225479127,
+              "variant_calls": [
+                {
+                  "variant": "contrast",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2832.071700002416,
+                  "score": 1.018017421245575,
+                  "confidence": 0.920017421245575,
+                  "text_len": 7
+                },
+                {
+                  "variant": "contrast_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2870.126900001196,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "binarize",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2815.034999992349,
+                  "score": 0.9610346655845643,
+                  "confidence": 0.8630346655845642,
+                  "text_len": 7
+                },
+                {
+                  "variant": "binarize_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2818.729799997527,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "invert",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2873.83709999267,
+                  "score": 0.8755207161903382,
+                  "confidence": 0.7775207161903381,
+                  "text_len": 7
+                },
+                {
+                  "variant": "invert_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2967.863900004886,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "sharpen",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2834.5889000047464,
+                  "score": 1.0260468225479127,
+                  "confidence": 0.9280468225479126,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "full:line_suppressed",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9280468225479126,
+      "score": 1.0260468225479127,
+      "raw_score": 1.0260468225479127,
+      "chosen_variant": "sharpen",
+      "elapsed_ms": 25698.25220000348,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 25698.238600001787,
+        "selected_variant": "sharpen",
+        "selected_confidence": 0.9280468225479126,
+        "selected_score": 1.0260468225479127,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5650.754899994354,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9177669882774353,
+            "winner_score": 1.0017669882774354,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5650.747300009243,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9177669882774353,
+              "winner_score": 1.0017669882774354,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2851.1463000031654,
+                  "score": 1.0017669882774354,
+                  "confidence": 0.9177669882774353,
+                  "text_len": 6
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2799.560700004804,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                }
+              ]
+            }
+          },
+          {
+            "stage": "full",
+            "variant_count": 12,
+            "elapsed_ms": 20006.82969999616,
+            "winner_variant": "sharpen",
+            "winner_confidence": 0.9280468225479126,
+            "winner_score": 1.0260468225479127,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 20006.82450000022,
+              "variant_count": 12,
+              "winner_variant": "sharpen",
+              "winner_confidence": 0.9280468225479126,
+              "winner_score": 1.0260468225479127,
+              "variant_calls": [
+                {
+                  "variant": "contrast",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2864.6873999969102,
+                  "score": 1.018017421245575,
+                  "confidence": 0.920017421245575,
+                  "text_len": 7
+                },
+                {
+                  "variant": "contrast_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2875.475299995742,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "binarize",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2896.8705000006594,
+                  "score": 0.9610346655845643,
+                  "confidence": 0.8630346655845642,
+                  "text_len": 7
+                },
+                {
+                  "variant": "binarize_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2859.6618000010494,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "invert",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2820.3026999981375,
+                  "score": 0.8755207161903382,
+                  "confidence": 0.7775207161903381,
+                  "text_len": 7
+                },
+                {
+                  "variant": "invert_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2859.0467000030912,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "sharpen",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2830.6363000010606,
+                  "score": 1.0260468225479127,
+                  "confidence": 0.9280468225479126,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input_variant": "extra:line_suppressed",
+      "text": "非磨削区及齿廓",
+      "confidence": 0.9280468225479126,
+      "score": 1.0260468225479127,
+      "raw_score": 1.0260468225479127,
+      "chosen_variant": "sharpen",
+      "elapsed_ms": 25864.151600006153,
+      "trace": {
+        "mode": "accurate",
+        "roi_hw": [
+          99,
+          401
+        ],
+        "elapsed_ms": 25864.134799994645,
+        "selected_variant": "sharpen",
+        "selected_confidence": 0.9280468225479126,
+        "selected_score": 1.0260468225479127,
+        "stages": [
+          {
+            "stage": "fast",
+            "variant_count": 2,
+            "elapsed_ms": 5684.704599989345,
+            "winner_variant": "baseline",
+            "winner_confidence": 0.9177669882774353,
+            "winner_score": 1.0017669882774354,
+            "winner_text_len": 6,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 5684.697300006519,
+              "variant_count": 2,
+              "winner_variant": "baseline",
+              "winner_confidence": 0.9177669882774353,
+              "winner_score": 1.0017669882774354,
+              "variant_calls": [
+                {
+                  "variant": "baseline",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2803.790400008438,
+                  "score": 1.0017669882774354,
+                  "confidence": 0.9177669882774353,
+                  "text_len": 6
+                },
+                {
+                  "variant": "baseline_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2880.869699991308,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                }
+              ]
+            }
+          },
+          {
+            "stage": "full",
+            "variant_count": 12,
+            "elapsed_ms": 20137.704799999483,
+            "winner_variant": "sharpen",
+            "winner_confidence": 0.9280468225479126,
+            "winner_score": 1.0260468225479127,
+            "winner_text_len": 7,
+            "backend_trace": {
+              "backend": "paddle_bridge",
+              "elapsed_ms": 20137.699099999736,
+              "variant_count": 12,
+              "winner_variant": "sharpen",
+              "winner_confidence": 0.9280468225479126,
+              "winner_score": 1.0260468225479127,
+              "variant_calls": [
+                {
+                  "variant": "contrast",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2806.7345999879763,
+                  "score": 1.018017421245575,
+                  "confidence": 0.920017421245575,
+                  "text_len": 7
+                },
+                {
+                  "variant": "contrast_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2860.017999992124,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "binarize",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2821.045899996534,
+                  "score": 0.9610346655845643,
+                  "confidence": 0.8630346655845642,
+                  "text_len": 7
+                },
+                {
+                  "variant": "binarize_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2994.7565000038594,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "invert",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2971.0543999972288,
+                  "score": 0.8755207161903382,
+                  "confidence": 0.7775207161903381,
+                  "text_len": 7
+                },
+                {
+                  "variant": "invert_rotate180",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2900.217000002158,
+                  "score": 0.0,
+                  "confidence": 0.0,
+                  "text_len": 0
+                },
+                {
+                  "variant": "sharpen",
+                  "backend": "paddle_bridge",
+                  "call_ms": 2783.737999998266,
+                  "score": 1.0260468225479127,
+                  "confidence": 0.9280468225479126,
+                  "text_len": 7
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

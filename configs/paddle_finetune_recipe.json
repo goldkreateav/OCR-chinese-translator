@@ -1,0 +1,12 @@
+{
+  "framework": "PaddleOCR",
+  "detector": "DBNet",
+  "dataset_root": "C:\\Users\\Valentin\\Downloads\\OCR-chinese\\data",
+  "steps": [
+    "Prepare det labels in PaddleOCR format: image_path\\t[{\"points\": [[x,y],...], \"transcription\": \"###\"}]",
+    "Create train/val split files from manifest.",
+    "Start from chinese det pretrained model and fine-tune with low threshold for max recall.",
+    "Export inference model and place it under models/detector/."
+  ],
+  "note": "This project provides inference + filter calibration; detector fine-tune is delegated to PaddleOCR training scripts."
+}

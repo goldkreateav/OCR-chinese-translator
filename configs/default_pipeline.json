@@ -1,0 +1,31 @@
+{
+  "dpi": 400,
+  "save_overlays": true,
+  "render": {
+    "backend": "auto",
+    "poppler_path": null,
+    "grayscale": true,
+    "apply_clahe": true,
+    "clahe_clip_limit": 2.5,
+    "clahe_tile_grid": [8, 8]
+  },
+  "detector": {
+    "backend": "paddleocr",
+    "paddle_lang": "ch",
+    "score_threshold": 0.2,
+    "min_area": 16,
+    "min_box_size": 4
+  },
+  "filter": {
+    "min_score": 0.1,
+    "classifier_path": null,
+    "classifier_threshold": 0.5,
+    "min_area": 12.0,
+    "max_aspect_ratio": 25.0
+  },
+  "mask": {
+    "dilate_kernel": 3,
+    "erode_kernel": 1,
+    "min_component_area": 20
+  }
+}

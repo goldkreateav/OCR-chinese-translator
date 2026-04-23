@@ -1,0 +1,153 @@
+Metadata-Version: 2.4
+Name: ocr-chinese-masker
+Version: 0.1.0
+Summary: Mask Chinese text areas in scanned engineering PDFs.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: opencv-python>=4.8
+Requires-Dist: pymupdf>=1.24
+Requires-Dist: scikit-learn>=1.4
+Requires-Dist: joblib>=1.3
+Requires-Dist: fastapi>=0.111
+Requires-Dist: uvicorn>=0.30
+Requires-Dist: python-multipart>=0.0.9
+Provides-Extra: detector
+Requires-Dist: paddleocr>=2.7.0.3; extra == "detector"
+Provides-Extra: rapidocr
+Requires-Dist: rapidocr-onnxruntime>=1.4.4; python_version < "3.13" and extra == "rapidocr"
+
+# OCR Chinese Text Masking (PDF)
+
+Pipeline for extracting binary masks of Chinese text in scanned engineering drawings.
+
+## What it does
+
+- Renders PDF pages to grayscale images with optional CLAHE.
+- Detects oriented text proposals (PaddleOCR backend, MSER fallback).
+- Filters text/non-text proposals (heuristics or trained classifier).
+- Rasterizes polygons into binary page masks (0/255).
+- Produces per-page overlays, proposals, and metrics reports.
+
+## Install
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .
+```
+
+Optional detector dependency:
+
+```bash
+pip install -e .[detector]
+```
+
+## Run inference
+
+```bash
+maskpdf run "scheme.pdf" --out "output" --dpi 400
+```
+
+Use explicit Poppler backend and local `pdftoppm` folder:
+
+```bash
+maskpdf run "scheme.pdf" --out "output" --dpi 400 --render-backend poppler --poppler-path "C:\Users\Valentin\Downloads\sollers-translate-pdf\third_party\poppler\poppler-25.12.0\Library\bin"
+```
+
+With ground-truth masks for evaluation:
+
+```bash
+maskpdf run "scheme.pdf" --out "output" --dpi 400 --gt-masks "data/gt_masks"
+```
+
+Outputs:
+
+- `output/rendered_pages/page_XXXX.png`
+- `output/proposals/page_XXXX_proposals.json`
+- `output/masks/page_XXXX_mask.png`
+- `output/overlays/page_XXXX_overlay.png`
+- `output/report.json`
+
+## Run local Web UI
+
+Start server:
+
+```bash
+maskpdf web --host 127.0.0.1 --port 8000
+```
+
+With explicit Poppler:
+
+```bash
+maskpdf web --host 127.0.0.1 --port 8000 --render-backend poppler --poppler-path "C:\Users\Valentin\Downloads\sollers-translate-pdf\third_party\poppler\poppler-25.12.0\Library\bin"
+```
+
+Then open [http://127.0.0.1:8000](http://127.0.0.1:8000), upload PDF, click **Generate Mask + OCR**, and click any highlighted region to open copyable text.
+
+Note: if PaddleOCR runtime is unavailable (for example `paddle` is not installed), the app automatically falls back to `RapidOCR` for region text extraction.
+
+## Labeling setup
+
+Create manifest + split:
+
+```bash
+maskpdf prepare-labeling --rendered-dir output/rendered_pages --manifest data/manifest.json --dev-ratio 0.5 --seed 42
+```
+
+Create helper list for CVAT / Label Studio:
+
+```bash
+maskpdf prepare-labeling --rendered-dir output/rendered_pages --manifest data/manifest.json --cvat-index-dir data/cvat
+```
+
+Annotation format in manifest (`annotations` per page):
+
+```json
+{
+  "polygon": [[x1, y1], [x2, y2], [x3, y3], [x4, y4]],
+  "label": "text"
+}
+```
+
+## Filter training & calibration
+
+1) Build feature dataset from proposals + GT masks:
+
+```bash
+python scripts/build_filter_features.py \
+  --proposals-dir output/proposals \
+  --gt-masks-dir data/gt_masks \
+  --rendered-dir output/rendered_pages \
+  --out data/filter_features.json
+```
+
+2) Train classifier:
+
+```bash
+maskpdf train-filter --features data/filter_features.json --model-out models/filter.joblib --trees 300
+```
+
+3) Calibrate threshold (maximize recall with low FPR):
+
+```bash
+maskpdf calibrate --scores-json data/filter_scores.json --target-recall 1.0
+```
+
+4) Write detector fine-tune recipe:
+
+```bash
+maskpdf write-finetune-recipe --dataset-root data --out configs/paddle_finetune_recipe.json
+```
+
+## Notes on target metrics
+
+- `100% recall` and `<5% FP` usually require iterative hard-negative mining.
+- Keep detector thresholds permissive first (maximize recall), then reduce FP with classifier calibration.
+- Use stratified dev/test splits covering different drawing styles and text sizes.
+
+## Web API smoke test
+
+```bash
+python scripts/smoke_web_api.py --pdf scheme.pdf --poppler-path "C:\Users\Valentin\Downloads\sollers-translate-pdf\third_party\poppler\poppler-25.12.0\Library\bin"
+```

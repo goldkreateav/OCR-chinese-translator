@@ -1,0 +1,2 @@
+[console_scripts]
+maskpdf = ocr_chinese.cli:main

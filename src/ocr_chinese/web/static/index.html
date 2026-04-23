@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Mask Click UI</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260422-2" />
+  </head>
+  <body>
+    <main>
+      <h1>PDF Mask Click UI</h1>
+      <section class="controls">
+        <label>PDF file <input id="pdfInput" type="file" accept="application/pdf" /></label>
+        <label>DPI <input id="dpiInput" type="number" value="400" min="72" max="1200" /></label>
+        <button id="uploadBtn">Upload PDF</button>
+        <button id="generateBtn" disabled>Generate Mask + OCR</button>
+      </section>
+
+      <section class="status">
+        <strong>Status:</strong> <span id="statusText">Idle</span>
+        <span id="projectInfo"></span>
+        <div id="versionRow" class="version-row">
+          <span class="muted">Version:</span> <span id="versionText" class="mono">-</span>
+        </div>
+      </section>
+
+      <section class="page-controls">
+        <button id="prevPageBtn" disabled>Prev</button>
+        <span id="pageText">Page: -</span>
+        <button id="nextPageBtn" disabled>Next</button>
+      </section>
+
+      <section id="viewerWrap" class="viewer-wrap hidden">
+        <div id="viewer" class="viewer">
+          <img id="pageImage" alt="Page" />
+          <img id="maskImage" alt="Mask overlay" class="mask-image" />
+          <svg id="regionOverlay" class="region-overlay"></svg>
+        </div>
+      </section>
+    </main>
+
+    <div id="modalBackdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2>Region Text</h2>
+        <div class="meta">
+          <span id="regionMeta"></span>
+        </div>
+        <textarea id="regionText" rows="6"></textarea>
+        <div class="modal-actions">
+          <button id="copyBtn">Copy</button>
+          <button id="retryOcrBtn">Retry OCR (accurate)</button>
+          <button id="closeModalBtn">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=20260422-2"></script>
+  </body>
+</html>
