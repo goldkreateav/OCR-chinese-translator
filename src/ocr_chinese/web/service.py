@@ -14,6 +14,7 @@ import uuid
 from fastapi import HTTPException, UploadFile
 
 from ..pipeline import PipelineConfig, run_mask_pipeline_with_regions
+from ..render import PdfRenderOptions, render_pdf_to_images
 from ..recognize import RecognitionConfig, RegionTextRecognizer, extract_region_roi
 from ..translate import (
     OpenAICompatConfig,
@@ -30,7 +31,7 @@ def _utc_now() -> str:
 
 @dataclass
 class GenerateOptions:
-    dpi: int = 360
+    dpi: int = 400
     render_backend: str = "auto"
     poppler_path: str | None = None
     ocr_mode: str = "eco"
@@ -45,6 +46,8 @@ class ProjectService:
         self._translate_queue: "queue.Queue[dict]" = queue.Queue()
         self._translate_threads: list[threading.Thread] = []
         self._translate_started = False
+        self._generate_threads: dict[str, threading.Thread] = {}
+        self._generate_lock = threading.Lock()
 
     def _ensure_translate_workers(self) -> None:
         if self._translate_started:
@@ -356,6 +359,70 @@ class ProjectService:
         self._write_status(project_id, status)
         return status
 
+    def create_import_project_and_render_pages(
+        self,
+        upload: UploadFile,
+        *,
+        dpi: int = 400,
+        render_backend: str = "auto",
+        poppler_path: str | None = None,
+    ) -> dict:
+        """
+        Create a project from an uploaded PDF and render pages only (no OCR/mask).
+        Intended for fast offline report review (import JSON + PDF).
+        """
+        created = self.create_project(upload)
+        project_id = str(created["project_id"])
+        project_dir = self._project_dir(project_id)
+        pdf_path = project_dir / "input.pdf"
+        output_dir = project_dir / "output"
+        rendered_dir = output_dir / "rendered_pages"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        status = self.get_status(project_id)
+        status["status"] = "running"
+        status["error"] = None
+        status["stage"] = "render"
+        status["progress"] = {
+            "status": "running",
+            "indeterminate": True,
+            "current_page": 0,
+            "total_pages": 0,
+            "page_id": None,
+            "current_region": 0,
+            "total_regions": 0,
+        }
+        status["updated_at"] = _utc_now()
+        self._write_status(project_id, status)
+
+        try:
+            opts = PdfRenderOptions()
+            opts.dpi = int(dpi)
+            opts.backend = render_backend or "auto"
+            opts.poppler_path = poppler_path
+            page_paths = render_pdf_to_images(pdf_path, rendered_dir, opts)
+            status["status"] = "done"
+            status["stage"] = "render"
+            status["pages"] = int(len(page_paths))
+            status["progress"] = {
+                "status": "done",
+                "indeterminate": False,
+                "current_page": int(len(page_paths)),
+                "total_pages": int(len(page_paths)),
+                "page_id": str(page_paths[0].stem) if page_paths else None,
+                "current_region": 0,
+                "total_regions": 0,
+            }
+            status["updated_at"] = _utc_now()
+            self._write_status(project_id, status)
+            return {"project_id": project_id, "pages": [p.stem for p in page_paths]}
+        except Exception as exc:
+            status["status"] = "error"
+            status["error"] = str(exc)
+            status["updated_at"] = _utc_now()
+            self._write_status(project_id, status)
+            raise
+
     def generate(self, project_id: str, options: GenerateOptions) -> dict:
         status = self.get_status(project_id)
         project_dir = self._project_dir(project_id)
@@ -448,6 +515,37 @@ class ProjectService:
             status["updated_at"] = _utc_now()
             self._write_status(project_id, status)
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+
+    def start_generate_background(self, project_id: str, options: GenerateOptions) -> dict:
+        """
+        Start generation in a background thread so the web server can keep
+        answering /status polls while the pipeline runs.
+        """
+        # Validate existence early (also warms up status file).
+        status = self.get_status(project_id)
+
+        with self._generate_lock:
+            existing = self._generate_threads.get(project_id)
+            if existing is not None and existing.is_alive():
+                return {"started": False, "status": "already_running", "project_id": project_id}
+
+            def _runner() -> None:
+                try:
+                    self.generate(project_id, options)
+                except Exception:
+                    # generate() persists error status; keep thread alive-safe.
+                    return
+
+            t = threading.Thread(target=_runner, name=f"generate-{project_id}", daemon=True)
+            self._generate_threads[project_id] = t
+            t.start()
+
+        # Return the latest status snapshot immediately.
+        try:
+            status = self.get_status(project_id)
+        except Exception:
+            pass
+        return {"started": True, "status": "running", "project_id": project_id, "snapshot": status}
 
     def load_translation_status(self, project_id: str, page_id: str, *, lang: str = "ru") -> dict:
         ctx_path = self._page_context_path(project_id, page_id, lang)

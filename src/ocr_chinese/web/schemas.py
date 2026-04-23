@@ -17,6 +17,12 @@ class GenerateRequest(BaseModel):
     ocr_workers: int | None = None
 
 
+class ImportRenderRequest(BaseModel):
+    dpi: int = 400
+    render_backend: str | None = None
+    poppler_path: str | None = None
+
+
 class ProjectStatusResponse(BaseModel):
     project_id: str
     status: str
@@ -24,6 +30,7 @@ class ProjectStatusResponse(BaseModel):
     pages: int = 0
     stage: str | None = None
     progress: dict | None = None
+    progress_pages: dict | None = None
     updated_at: str | None = None
 
 

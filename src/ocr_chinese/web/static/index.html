@@ -1,64 +1,38 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PDF Mask Click UI</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260422-2" />
+    <title>SOLLERS OCR Workspace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260423-1" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              sollers: {
+                graphite: "#292523",
+                white: "#FFFFFF",
+                gray: "#606164",
+                graySoft: "#E4E5E6",
+                grayBorder: "#CACCCE",
+                orange: "#F47C30",
+                green: "#014637",
+                blue: "#193C84",
+                yellow: "#FFF200",
+                gold: "#FFC805",
+                red: "#C9252C",
+                redDark: "#7C1C21",
+              },
+            },
+          },
+        },
+      };
+    </script>
   </head>
-  <body>
-    <main>
-      <h1>PDF Mask Click UI</h1>
-      <section class="controls">
-        <label>PDF file <input id="pdfInput" type="file" accept="application/pdf" /></label>
-        <label>DPI <input id="dpiInput" type="number" value="400" min="72" max="1200" /></label>
-        <button id="uploadBtn">Upload PDF</button>
-        <button id="generateBtn" disabled>Generate Mask + OCR</button>
-      </section>
-
-      <section class="status">
-        <strong>Status:</strong> <span id="statusText">Idle</span>
-        <span id="projectInfo"></span>
-        <div id="versionRow" class="version-row">
-          <span class="muted">Version:</span> <span id="versionText" class="mono">-</span>
-        </div>
-      </section>
-
-      <section class="page-controls">
-        <button id="prevPageBtn" disabled>Prev</button>
-        <span id="pageText">Page: -</span>
-        <button id="nextPageBtn" disabled>Next</button>
-      </section>
-
-      <section id="viewerWrap" class="viewer-wrap hidden">
-        <div id="viewer" class="viewer">
-          <img id="pageImage" alt="Page" />
-          <img id="maskImage" alt="Mask overlay" class="mask-image" />
-          <svg id="regionOverlay" class="region-overlay"></svg>
-        </div>
-      </section>
-    </main>
-
-    <div id="modalBackdrop" class="modal-backdrop hidden">
-      <div class="modal">
-        <h2>Region Text</h2>
-        <div class="meta">
-          <span id="regionMeta"></span>
-        </div>
-        <div class="meta">
-          <span class="muted">Translation (RU):</span> <span id="translationMeta" class="mono"></span>
-        </div>
-        <textarea id="regionText" rows="6"></textarea>
-        <textarea id="regionTranslation" rows="6" placeholder="Перевод появится здесь..." readonly></textarea>
-        <div class="modal-actions">
-          <button id="copyBtn">Copy</button>
-          <button id="copyTranslationBtn">Copy translation</button>
-          <button id="retryOcrBtn">Retry OCR (accurate)</button>
-          <button id="closeModalBtn">Close</button>
-        </div>
-      </div>
-    </div>
-
-    <script src="/static/app.js?v=20260422-2"></script>
+  <body class="bg-sollers-white text-sollers-graphite antialiased">
+    <div id="root"></div>
+    <script type="module" src="/static/app.js?v=20260423-15"></script>
   </body>
 </html>

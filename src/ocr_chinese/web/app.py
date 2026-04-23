@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -40,6 +40,10 @@ def create_app(
     async def index() -> FileResponse:
         return FileResponse(static_dir / "index.html")
 
+    @app.get("/import")
+    async def index_import() -> FileResponse:
+        return FileResponse(static_dir / "index.html")
+
     @app.get("/api/version")
     async def version() -> JSONResponse:
         try:
@@ -65,6 +69,22 @@ def create_app(
             status=created["status"],
         )
 
+    @app.post("/api/import/projects")
+    async def import_project(
+        file: UploadFile = File(...),
+        dpi: int = Form(400),
+        render_backend: str | None = Form(None),
+    ) -> JSONResponse:
+        chosen_backend = render_backend or app.state.default_render_backend
+        poppler_path = app.state.default_poppler_path
+        payload = service.create_import_project_and_render_pages(
+            file,
+            dpi=int(dpi or 400),
+            render_backend=chosen_backend,
+            poppler_path=poppler_path,
+        )
+        return JSONResponse(payload)
+
     @app.post("/api/projects/{project_id}/generate")
     async def generate(project_id: str, request: GenerateRequest) -> JSONResponse:
         render_backend = request.render_backend or app.state.default_render_backend
@@ -84,7 +104,7 @@ def create_app(
             ocr_mode=ocr_mode,
             ocr_workers=ocr_workers,
         )
-        payload = service.generate(project_id, options)
+        payload = service.start_generate_background(project_id, options)
         return JSONResponse(payload)
 
     @app.get("/api/projects/{project_id}/status", response_model=ProjectStatusResponse)
@@ -97,6 +117,7 @@ def create_app(
             pages=int(data.get("pages", 0)),
             stage=data.get("stage"),
             progress=data.get("progress"),
+            progress_pages=data.get("progress_pages"),
             updated_at=data.get("updated_at"),
         )
 
