@@ -712,20 +712,21 @@ class RegionTextRecognizer:
         variant_calls: list[dict[str, Any]] = []
         for variant_name, variant_img in variants:
             t0 = time.perf_counter()
-            text, confidence = self._paddle_bridge.recognize(variant_img, lang=self.config.lang)
+            text, confidence, raw_preview = self._paddle_bridge.recognize(variant_img, lang=self.config.lang)
             call_ms = (time.perf_counter() - t0) * 1000.0
             score = score_ocr_result(text, confidence)
-            if self.config.profile_variant_calls:
-                variant_calls.append(
-                    {
-                        "variant": variant_name,
-                        "backend": "paddle_bridge",
-                        "call_ms": call_ms,
-                        "score": float(score),
-                        "confidence": float(confidence),
-                        "text_len": useful_length(text),
-                    }
-                )
+            if self.config.profile_variant_calls or self.config.debug_raw_results:
+                payload = {
+                    "variant": variant_name,
+                    "backend": "paddle_bridge",
+                    "call_ms": call_ms,
+                    "score": float(score),
+                    "confidence": float(confidence),
+                    "text_len": useful_length(text),
+                }
+                if self.config.debug_raw_results:
+                    payload["raw_preview"] = raw_preview
+                variant_calls.append(payload)
             if score > best_score:
                 best_score = score
                 best_text = text
@@ -741,7 +742,9 @@ class RegionTextRecognizer:
                 "winner_variant": best_variant,
                 "winner_confidence": float(best_conf),
                 "winner_score": float(max(0.0, best_score)),
-                "variant_calls": variant_calls if self.config.profile_variant_calls else [],
+                "variant_calls": variant_calls
+                if (self.config.profile_variant_calls or self.config.debug_raw_results)
+                else [],
             }
         )
         return normalize_text(best_text), best_conf, best_variant, float(max(0.0, best_score))
@@ -752,9 +755,9 @@ class _PaddleOcrBridge:
         self.python_exe = python_exe
         self.script_path = script_path
 
-    def recognize(self, image_gray: np.ndarray, lang: str = "ch") -> tuple[str, float]:
+    def recognize(self, image_gray: np.ndarray, lang: str = "ch") -> tuple[str, float, Any]:
         if image_gray.size == 0:
-            return "", 0.0
+            return "", 0.0, None
         with tempfile.TemporaryDirectory(prefix="paddle_bridge_") as tmp:
             img_path = Path(tmp) / "roi.png"
             cv2.imwrite(str(img_path), image_gray)
@@ -774,18 +777,19 @@ class _PaddleOcrBridge:
                     timeout=float(os.getenv("OCR_PADDLE_BRIDGE_TIMEOUT_S", "90")),
                 )
             except subprocess.TimeoutExpired:
-                return "", 0.0
+                return "", 0.0, {"error": "timeout"}
             except Exception:
-                return "", 0.0
+                return "", 0.0, {"error": "spawn_failed"}
             if proc.returncode != 0:
-                return "", 0.0
+                return "", 0.0, {"error": "nonzero_exit", "stderr": (proc.stderr or "")[-800:]}
             try:
                 payload = json.loads(proc.stdout.strip() or "{}")
             except Exception:
-                return "", 0.0
+                return "", 0.0, {"error": "bad_json", "stdout": (proc.stdout or "")[-800:], "stderr": (proc.stderr or "")[-800:]}
             text = str(payload.get("text") or "")
             conf = float(payload.get("confidence") or 0.0)
-            return text, conf
+            raw_preview = payload.get("raw_preview")
+            return text, conf, raw_preview
 
 
 def _maybe_build_paddle_bridge(config: RecognitionConfig) -> _PaddleOcrBridge | None:
