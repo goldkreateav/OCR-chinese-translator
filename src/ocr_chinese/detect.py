@@ -64,6 +64,102 @@ def _build_rapidocr(device: str) -> Any:
             return None
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _extract_paddle_det_items(result: Any) -> list[tuple[Any, float]]:
+    """
+    Normalize PaddleOCR detection outputs across API versions.
+
+    Returns a list of (polygon_like, score).
+    """
+    normalized: list[tuple[Any, float]] = []
+
+    def append_from_entry(entry: Any) -> None:
+        # Classic entry: [polygon, score]
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            normalized.append((entry[0], _safe_float(entry[1], 1.0)))
+            return
+
+        # Newer structured dict outputs.
+        if isinstance(entry, dict):
+            polys = entry.get("dt_polys") or entry.get("polys") or entry.get("boxes")
+            scores = entry.get("dt_scores") or entry.get("scores")
+            if polys is None:
+                return
+            if isinstance(polys, np.ndarray):
+                polys_iter = polys.tolist()
+            else:
+                polys_iter = list(polys)
+            scores_iter = []
+            if scores is not None:
+                if isinstance(scores, np.ndarray):
+                    scores_iter = scores.tolist()
+                else:
+                    try:
+                        scores_iter = list(scores)
+                    except Exception:
+                        scores_iter = []
+            for idx, poly in enumerate(polys_iter):
+                score = _safe_float(scores_iter[idx], 1.0) if idx < len(scores_iter) else 1.0
+                normalized.append((poly, score))
+            return
+
+        # Paddle result objects may expose attributes instead of dict keys.
+        for poly_attr, score_attr in (
+            ("dt_polys", "dt_scores"),
+            ("polys", "scores"),
+            ("boxes", "scores"),
+        ):
+            polys = getattr(entry, poly_attr, None)
+            if polys is None:
+                continue
+            scores = getattr(entry, score_attr, None)
+            if isinstance(polys, np.ndarray):
+                polys_iter = polys.tolist()
+            else:
+                polys_iter = list(polys)
+            scores_iter = []
+            if scores is not None:
+                if isinstance(scores, np.ndarray):
+                    scores_iter = scores.tolist()
+                else:
+                    try:
+                        scores_iter = list(scores)
+                    except Exception:
+                        scores_iter = []
+            for idx, poly in enumerate(polys_iter):
+                score = _safe_float(scores_iter[idx], 1.0) if idx < len(scores_iter) else 1.0
+                normalized.append((poly, score))
+            return
+
+    if result is None:
+        return normalized
+
+    # Classic PaddleOCR 2.x: [ [ [poly, score], ... ] ]
+    if isinstance(result, (list, tuple)) and result:
+        first = result[0]
+        if isinstance(first, (list, tuple)):
+            # Could be either list-of-boxes or [poly,score].
+            if len(first) == 2 and not isinstance(first[0], (list, tuple, np.ndarray)):
+                append_from_entry(result)
+                return normalized
+            for item in first:
+                append_from_entry(item)
+            if normalized:
+                return normalized
+        for entry in result:
+            append_from_entry(entry)
+        return normalized
+
+    append_from_entry(result)
+    return normalized
+
+
 @dataclass
 class TextProposal:
     polygon: np.ndarray  # shape=(N, 2), dtype=float32
@@ -144,30 +240,33 @@ class OrientedTextDetector:
                     result = self._paddle.ocr(image_gray) or []
                 except Exception:
                     if hasattr(self._paddle, "predict"):
-                        result = self._paddle.predict(image_gray) or []
+                        predicted = self._paddle.predict(image_gray)
+                        try:
+                            result = list(predicted)
+                        except Exception:
+                            result = predicted or []
                     else:
                         raise
-        raw_boxes = result[0] if result else []
+        raw_boxes = _extract_paddle_det_items(result)
         proposals: list[TextProposal] = []
         for item in raw_boxes:
-            if len(item) != 2:
-                continue
             polygon, score_raw = item
-            if isinstance(score_raw, (list, tuple)) and len(score_raw) >= 2:
-                # output shape can be (text, score) when recognition is enabled
-                score = float(score_raw[1])
-            else:
-                score = float(score_raw)
+            score = _safe_float(score_raw, 1.0)
             if score < self.config.score_threshold:
                 continue
             points = np.asarray(polygon, dtype=np.float32)
-            if points.shape[0] < 4:
+            if points.ndim != 2 or points.shape[0] < 4 or points.shape[1] < 2:
                 continue
             area = cv2.contourArea(points)
             if area < self.config.min_area:
                 continue
             proposals.append(
                 TextProposal(polygon=points, score=float(score), source="paddleocr")
+            )
+        if not proposals and not self.config.allow_fallback:
+            raise RuntimeError(
+                "PaddleOCR detector produced no usable polygons for this page. "
+                "Check Paddle API compatibility / runtime logs."
             )
         return proposals
 
