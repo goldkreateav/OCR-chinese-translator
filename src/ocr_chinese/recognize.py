@@ -156,31 +156,60 @@ class RegionTextRecognizer:
             if self._paddle_bridge is None and not config.allow_fallback:
                 raise RuntimeError(self._init_error)
             return
-        try:
-            self._paddle = PaddleOCR(
+        ctor_options = [
+            dict(
+                lang=config.lang,
+                det=False,
+                rec=True,
+                show_log=False,
+                use_angle_cls=self._use_angle_cls,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            ),
+            dict(
+                lang=config.lang,
+                show_log=False,
+                use_angle_cls=self._use_angle_cls,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            ),
+            dict(
+                lang=config.lang,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            ),
+            dict(
                 use_angle_cls=self._use_angle_cls,
                 lang=config.lang,
                 det=False,
                 rec=True,
                 show_log=False,
-            )
-        except Exception:
+            ),
+            dict(use_angle_cls=self._use_angle_cls, lang=config.lang),
+            dict(lang=config.lang),
+        ]
+        last_exc: Exception | None = None
+        for kwargs in ctor_options:
             try:
-                self._paddle = PaddleOCR(use_angle_cls=self._use_angle_cls, lang=config.lang)
-            except Exception:
-                try:
-                    # PaddleOCR 3.x may reject use_angle_cls/show_log and det/rec args.
-                    self._paddle = PaddleOCR(lang=config.lang)
-                except Exception as exc:
-                    self._paddle = None
-                    self._paddle_bridge = _maybe_build_paddle_bridge(config)
-                    self._init_error = str(exc)
-                    if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
-                        self._rapid = _build_rapidocr(config.ocr_device)
-                    if self._paddle_bridge is None and not config.allow_fallback:
-                        raise RuntimeError(
-                            f"PaddleOCR recognizer initialization failed in strict mode: {self._init_error}"
-                        )
+                self._paddle = PaddleOCR(**kwargs)
+                last_exc = None
+                break
+            except Exception as exc:
+                self._paddle = None
+                last_exc = exc
+
+        if self._paddle is None:
+            self._paddle_bridge = _maybe_build_paddle_bridge(config)
+            self._init_error = str(last_exc) if last_exc is not None else "Unknown Paddle init error"
+            if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
+                self._rapid = _build_rapidocr(config.ocr_device)
+            if self._paddle_bridge is None and not config.allow_fallback:
+                raise RuntimeError(
+                    f"PaddleOCR recognizer initialization failed in strict mode: {self._init_error}"
+                )
 
     def consume_last_trace(self) -> dict[str, Any]:
         trace = dict(self._last_trace)

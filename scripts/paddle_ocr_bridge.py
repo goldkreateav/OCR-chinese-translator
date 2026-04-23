@@ -22,19 +22,47 @@ def main() -> None:
         print(json.dumps({"text": "", "confidence": 0.0}, ensure_ascii=False))
         return
 
-    try:
-        # PaddleOCR 2.x classic API (preferred for this bridge).
-        ocr = PaddleOCR(use_angle_cls=False, lang=args.lang, det=False, rec=True, show_log=False)
-    except Exception:
-        # Compatibility fallback for variants where det/rec args are removed.
+    ctor_options = [
+        dict(
+            lang=args.lang,
+            det=False,
+            rec=True,
+            show_log=False,
+            use_angle_cls=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        ),
+        dict(
+            lang=args.lang,
+            show_log=False,
+            use_angle_cls=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        ),
+        dict(
+            lang=args.lang,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        ),
+        dict(use_angle_cls=False, lang=args.lang, det=False, rec=True, show_log=False),
+        dict(use_angle_cls=False, lang=args.lang, show_log=False),
+        dict(use_angle_cls=False, lang=args.lang),
+        dict(lang=args.lang),
+    ]
+    last_exc = None
+    ocr = None
+    for kwargs in ctor_options:
         try:
-            ocr = PaddleOCR(use_angle_cls=False, lang=args.lang, show_log=False)
-        except Exception:
-            try:
-                ocr = PaddleOCR(use_angle_cls=False, lang=args.lang)
-            except Exception:
-                # PaddleOCR 3.x may reject use_angle_cls/show_log entirely.
-                ocr = PaddleOCR(lang=args.lang)
+            ocr = PaddleOCR(**kwargs)
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+    if ocr is None:
+        raise RuntimeError(str(last_exc) if last_exc is not None else "Failed to initialize PaddleOCR bridge.")
 
     # PaddleOCR API varies across versions:
     # - older: ocr(img, det=..., rec=..., cls=...)

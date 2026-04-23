@@ -190,30 +190,55 @@ class OrientedTextDetector:
                 # fall back to RapidOCR (or MSER as a last resort).
                 self._paddle = None
                 self._paddle_error = "paddleocr package is not importable"
-            try:
-                # Older PaddleOCR API
-                self._paddle = PaddleOCR(
+            ctor_options = [
+                # Prefer disabling all orientation/unwarp helpers to keep box coordinates
+                # in the same frame as the original rendered page.
+                dict(
+                    lang=config.paddle_lang,
+                    det=True,
+                    rec=False,
+                    show_log=False,
+                    use_angle_cls=False,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                ),
+                dict(
+                    lang=config.paddle_lang,
+                    show_log=False,
+                    use_angle_cls=False,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                ),
+                dict(
+                    lang=config.paddle_lang,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                ),
+                # Compatibility fallbacks for older APIs.
+                dict(
                     use_angle_cls=False,
                     lang=config.paddle_lang,
                     det=True,
                     rec=False,
                     show_log=False,
-                )
-            except Exception:
+                ),
+                dict(use_angle_cls=False, lang=config.paddle_lang, show_log=False),
+                dict(lang=config.paddle_lang),
+            ]
+            last_exc: Exception | None = None
+            for kwargs in ctor_options:
                 try:
-                    # Newer PaddleOCR API (det/rec flags removed)
-                    self._paddle = PaddleOCR(
-                        use_angle_cls=False,
-                        lang=config.paddle_lang,
-                        show_log=False,
-                    )
-                except Exception:
-                    try:
-                        # Newest PaddleOCR API variants may reject show_log/use_angle_cls.
-                        self._paddle = PaddleOCR(lang=config.paddle_lang)
-                    except Exception as exc:  # pragma: no cover
-                        self._paddle = None
-                        self._paddle_error = str(exc)
+                    self._paddle = PaddleOCR(**kwargs)
+                    last_exc = None
+                    break
+                except Exception as exc:  # pragma: no cover
+                    last_exc = exc
+                    self._paddle = None
+            if self._paddle is None and last_exc is not None:
+                self._paddle_error = str(last_exc)
         if config.allow_fallback and RapidOCR is not None:
             self._rapid = _build_rapidocr(config.ocr_device)
 
