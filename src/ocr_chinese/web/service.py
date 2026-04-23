@@ -578,7 +578,6 @@ class ProjectService:
             **runtime_probe,
         }
         status["updated_at"] = _utc_now()
-        status["translate_status"] = "running"
         self._write_status(project_id, status)
 
         try:
@@ -651,7 +650,6 @@ class ProjectService:
             status["report_path"] = str((output_dir / "report.json").as_posix())
             status["ocr_profile_path"] = str((output_dir / "ocr_profile.json").as_posix())
             status["updated_at"] = _utc_now()
-            status["translate_status"] = "running"
             self._write_status(project_id, status)
             return {"status": status, "report": report}
         except Exception as exc:

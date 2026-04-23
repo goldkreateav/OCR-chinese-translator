@@ -672,9 +672,10 @@ function App() {
       alert(await resp.text());
       return;
     }
+    // Generation runs in background; /status polling reflects real completion.
     await loadPages(projectId);
     setGenerateInFlight(false);
-    setStatusText("Done");
+    setStatusText("Started");
   }
 
   async function handleRetryRegion() {
