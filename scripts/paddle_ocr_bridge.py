@@ -8,7 +8,7 @@ import sys
 import cv2
 
 
-def _preview_obj(obj, *, max_items: int = 6, max_str: int = 400, depth: int = 0, max_depth: int = 3):
+def _preview_obj(obj, *, max_items: int = 24, max_str: int = 400, depth: int = 0, max_depth: int = 3):
     if depth > max_depth:
         return "<max_depth>"
     if obj is None or isinstance(obj, (bool, int, float)):
@@ -26,7 +26,13 @@ def _preview_obj(obj, *, max_items: int = 6, max_str: int = 400, depth: int = 0,
                 sample[str(k)] = _preview_obj(obj.get(k), max_items=max_items, max_str=max_str, depth=depth + 1)
             except Exception:
                 sample[str(k)] = "<error>"
-        return {"__type__": "dict", "keys": [str(k) for k in keys[:max_items]], "sample": sample}
+        return {
+            "__type__": "dict",
+            "keys": [str(k) for k in keys[:max_items]],
+            "keys_total": len(keys),
+            "keys_truncated": len(keys) > max_items,
+            "sample": sample,
+        }
     if isinstance(obj, (list, tuple)):
         items = []
         for x in list(obj)[:max_items]:
@@ -47,6 +53,84 @@ def _preview_obj(obj, *, max_items: int = 6, max_str: int = 400, depth: int = 0,
     except Exception:
         r = "<unrepr>"
     return {"__type__": type(obj).__name__, "repr": _preview_obj(r, depth=depth + 1)}
+
+
+def _best_text_from_paddle3_result(result: object) -> tuple[str, float]:
+    """
+    PaddleOCR 3.x best practice: `PaddleOCR.predict(...)` returns iterable of result objects.
+    Their printed/json form contains `res` with `rec_texts` and `rec_scores`.
+    We pick the best non-empty text by max score.
+    """
+    # Most common (as seen in docs / print output): [{'res': {...}}] or [ResultLike]
+    try:
+        items = list(result) if isinstance(result, (list, tuple)) else [result]
+    except Exception:
+        items = [result]
+
+    best_text = ""
+    best_score = 0.0
+
+    def consider(text: object, score: object) -> None:
+        nonlocal best_text, best_score
+        try:
+            t = str(text or "").strip()
+        except Exception:
+            t = ""
+        if not t:
+            return
+        try:
+            s = float(score)
+        except Exception:
+            s = 0.0
+        if s > best_score:
+            best_text, best_score = t, s
+
+    def extract_from_res(res: object) -> None:
+        if not isinstance(res, dict):
+            return
+        texts = res.get("rec_texts")
+        scores = res.get("rec_scores")
+        if isinstance(texts, list) and scores is not None:
+            # scores might be list or numpy array; make it indexable.
+            try:
+                scores_list = list(scores)  # type: ignore[arg-type]
+            except Exception:
+                scores_list = []
+            for i in range(min(len(texts), len(scores_list))):
+                consider(texts[i], scores_list[i])
+
+    for it in items:
+        # dict case (some environments already return json-like dicts)
+        if isinstance(it, dict):
+            if "res" in it and isinstance(it.get("res"), dict):
+                extract_from_res(it.get("res"))
+            else:
+                extract_from_res(it)
+            continue
+
+        # Result object case (docs: res.print(), res.save_to_json())
+        if hasattr(it, "json"):
+            try:
+                payload = getattr(it, "json")
+                if isinstance(payload, dict):
+                    if "res" in payload:
+                        extract_from_res(payload.get("res"))
+                    else:
+                        extract_from_res(payload)
+            except Exception:
+                pass
+        # Fallback: old-style list pairs [[("text", score)]]
+        try:
+            if isinstance(it, list) and it:
+                r0 = it[0]
+                if isinstance(r0, list) and r0:
+                    r0 = r0[0]
+                if isinstance(r0, (list, tuple)) and len(r0) >= 2:
+                    consider(r0[0], r0[1])
+        except Exception:
+            pass
+
+    return best_text, float(best_score)
 
 
 def main() -> None:
@@ -105,12 +189,14 @@ def main() -> None:
     if ocr is None:
         raise RuntimeError(str(last_exc) if last_exc is not None else "Failed to initialize PaddleOCR bridge.")
 
-    # PaddleOCR API varies across versions:
-    # - older: ocr(img, det=..., rec=..., cls=...)
-    # - newer: ocr(img) delegates to predict(img) with different kwargs
+    # PaddleOCR 3.x docs recommend `ocr.predict(...)` and iterating results.
+    # We still keep compatibility fallbacks for older versions.
     result = None
     try:
-        result = ocr.ocr(img, det=False, rec=True, cls=False)
+        if hasattr(ocr, "predict"):
+            result = ocr.predict(img)
+        else:
+            result = ocr.ocr(img, det=False, rec=True, cls=False)
     except Exception:
         try:
             result = ocr.ocr(img, cls=False)
@@ -124,15 +210,7 @@ def main() -> None:
     conf = 0.0
     raw_preview = None
     try:
-        # PaddleOCR rec-only formats vary; normalize to best candidate.
-        # Common: [[("text", 0.98)]] or [("text", 0.98)] or [["text", 0.98]]
-        if isinstance(result, list) and result:
-            r0 = result[0]
-            if isinstance(r0, list) and r0:
-                r0 = r0[0]
-            if isinstance(r0, (list, tuple)) and len(r0) >= 2:
-                text = str(r0[0] or "")
-                conf = float(r0[1] or 0.0)
+        text, conf = _best_text_from_paddle3_result(result)
     except Exception:
         text = ""
         conf = 0.0
