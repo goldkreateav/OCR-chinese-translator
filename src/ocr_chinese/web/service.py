@@ -77,7 +77,22 @@ class ProjectService:
             "-c",
             (
                 "from paddleocr import PaddleOCR; "
-                "PaddleOCR(lang='ch', show_log=False); "
+                "ok=False; "
+                "errs=[]; "
+                "ctors=["
+                "dict(lang='ch', show_log=False),"
+                "dict(lang='ch', use_angle_cls=False),"
+                "dict(lang='ch')"
+                "]; "
+                "import sys; "
+                "obj=None; "
+                "for kw in ctors:\n"
+                "  try:\n"
+                "    obj=PaddleOCR(**kw); ok=True; break\n"
+                "  except Exception as e:\n"
+                "    errs.append(str(e));\n"
+                "if not ok:\n"
+                "  raise RuntimeError(' ; '.join(errs[-2:]) or 'Paddle init failed'); "
                 "print('ok')"
             ),
         ]

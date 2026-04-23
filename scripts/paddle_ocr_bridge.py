@@ -25,12 +25,16 @@ def main() -> None:
     try:
         # PaddleOCR 2.x classic API (preferred for this bridge).
         ocr = PaddleOCR(use_angle_cls=False, lang=args.lang, det=False, rec=True, show_log=False)
-    except TypeError:
+    except Exception:
         # Compatibility fallback for variants where det/rec args are removed.
         try:
             ocr = PaddleOCR(use_angle_cls=False, lang=args.lang, show_log=False)
-        except TypeError:
-            ocr = PaddleOCR(use_angle_cls=False, lang=args.lang)
+        except Exception:
+            try:
+                ocr = PaddleOCR(use_angle_cls=False, lang=args.lang)
+            except Exception:
+                # PaddleOCR 3.x may reject use_angle_cls/show_log entirely.
+                ocr = PaddleOCR(lang=args.lang)
 
     # PaddleOCR API varies across versions:
     # - older: ocr(img, det=..., rec=..., cls=...)
@@ -38,10 +42,10 @@ def main() -> None:
     result = None
     try:
         result = ocr.ocr(img, det=False, rec=True, cls=False)
-    except TypeError:
+    except Exception:
         try:
             result = ocr.ocr(img, cls=False)
-        except TypeError:
+        except Exception:
             if hasattr(ocr, "predict"):
                 result = ocr.predict(img)
             else:

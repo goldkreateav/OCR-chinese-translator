@@ -167,16 +167,20 @@ class RegionTextRecognizer:
         except Exception:
             try:
                 self._paddle = PaddleOCR(use_angle_cls=self._use_angle_cls, lang=config.lang)
-            except Exception as exc:
-                self._paddle = None
-                self._paddle_bridge = _maybe_build_paddle_bridge(config)
-                self._init_error = str(exc)
-                if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
-                    self._rapid = _build_rapidocr(config.ocr_device)
-                if self._paddle_bridge is None and not config.allow_fallback:
-                    raise RuntimeError(
-                        f"PaddleOCR recognizer initialization failed in strict mode: {self._init_error}"
-                    )
+            except Exception:
+                try:
+                    # PaddleOCR 3.x may reject use_angle_cls/show_log and det/rec args.
+                    self._paddle = PaddleOCR(lang=config.lang)
+                except Exception as exc:
+                    self._paddle = None
+                    self._paddle_bridge = _maybe_build_paddle_bridge(config)
+                    self._init_error = str(exc)
+                    if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
+                        self._rapid = _build_rapidocr(config.ocr_device)
+                    if self._paddle_bridge is None and not config.allow_fallback:
+                        raise RuntimeError(
+                            f"PaddleOCR recognizer initialization failed in strict mode: {self._init_error}"
+                        )
 
     def consume_last_trace(self) -> dict[str, Any]:
         trace = dict(self._last_trace)

@@ -111,9 +111,13 @@ class OrientedTextDetector:
                         lang=config.paddle_lang,
                         show_log=False,
                     )
-                except Exception as exc:  # pragma: no cover
-                    self._paddle = None
-                    self._paddle_error = str(exc)
+                except Exception:
+                    try:
+                        # Newest PaddleOCR API variants may reject show_log/use_angle_cls.
+                        self._paddle = PaddleOCR(lang=config.paddle_lang)
+                    except Exception as exc:  # pragma: no cover
+                        self._paddle = None
+                        self._paddle_error = str(exc)
         if config.allow_fallback and RapidOCR is not None:
             self._rapid = _build_rapidocr(config.ocr_device)
 
