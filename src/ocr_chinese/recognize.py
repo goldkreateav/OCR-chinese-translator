@@ -1128,6 +1128,15 @@ def _parse_recognition_result(result: Any) -> tuple[str, float]:
                 best_text, best_score = text, score
             return
         if isinstance(item, list):
+            # Common PaddleOCR formats include list pairs like ["TEXT", 0.98].
+            if len(item) >= 2 and isinstance(item[0], str):
+                text = str(item[0] or "").strip()
+                try:
+                    score = float(item[1])
+                except Exception:
+                    score = 0.0
+                if score > best_score and text:
+                    best_text, best_score = text, score
             for sub in item:
                 handle_item(sub)
 
