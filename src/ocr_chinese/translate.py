@@ -66,6 +66,69 @@ def load_openai_compat_config() -> OpenAICompatConfig:
     )
 
 
+def _extract_chat_text(resp: object) -> str:
+    """
+    Be tolerant to slightly-nonstandard OpenAI-compatible responses.
+
+    Expected (OpenAI SDK): resp.choices[0].message.content -> str
+    Some gateways may return message as a plain string/dict; sometimes text is in choices[0].text.
+    """
+    try:
+        choices = getattr(resp, "choices", None) or []
+    except Exception:
+        choices = []
+    if not choices:
+        return ""
+
+    ch0 = choices[0]
+
+    msg = getattr(ch0, "message", None)
+    if msg is not None:
+        # Common SDK shape
+        try:
+            content = getattr(msg, "content", None)
+        except Exception:
+            content = None
+        if content is not None:
+            try:
+                s = str(content).strip()
+                if s:
+                    return s
+            except Exception:
+                pass
+
+        # Gateway oddities
+        if isinstance(msg, str):
+            s = msg.strip()
+            if s:
+                return s
+        if isinstance(msg, dict):
+            try:
+                s = str(msg.get("content") or "").strip()
+                if s:
+                    return s
+            except Exception:
+                pass
+
+        # Last resort: stringify message object
+        try:
+            s = str(msg).strip()
+            if s:
+                return s
+        except Exception:
+            pass
+
+    # Some compat servers return "text" per choice.
+    try:
+        s = str(getattr(ch0, "text", "") or "").strip()
+        if s:
+            return s
+    except Exception:
+        pass
+
+    return ""
+
+
 def _chat_completions(
     cfg: OpenAICompatConfig,
     messages: list[dict[str, str]],
@@ -108,9 +171,14 @@ def _chat_completions(
                 kwargs.pop("reasoning_effort", None)
                 resp = client.chat.completions.create(**kwargs)
 
-            content = str((resp.choices[0].message.content or "")).strip()
+            content = _extract_chat_text(resp)
             if not content:
-                raise TranslateError("Empty message.content in response.")
+                try:
+                    choice0 = getattr(resp, "choices", [None])[0]
+                    msg0 = getattr(choice0, "message", None)
+                except Exception:
+                    msg0 = None
+                raise TranslateError(f"Empty message content in response (message={msg0!r}).")
             return content
         except Exception as e:
             last_err = e
