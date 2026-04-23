@@ -17,6 +17,7 @@ dependencies = [
   "fastapi>=0.111",
   "uvicorn>=0.30",
   "python-multipart>=0.0.9",
+  "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]

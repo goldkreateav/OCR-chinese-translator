@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 import time
-from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+from openai import OpenAI  # type: ignore
 
 
 class TranslateError(RuntimeError):
@@ -20,34 +18,6 @@ def _env(name: str, default: str | None = None) -> str | None:
     return str(v)
 
 
-def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeout_s: float) -> dict:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = Request(url=url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json; charset=utf-8")
-    for k, v in headers.items():
-        if v is None:
-            continue
-        req.add_header(k, v)
-    try:
-        with urlopen(req, timeout=float(timeout_s)) as resp:
-            raw = resp.read()
-    except HTTPError as e:
-        msg = ""
-        try:
-            msg = (e.read() or b"").decode("utf-8", errors="replace")
-        except Exception:
-            msg = str(e)
-        raise TranslateError(f"HTTP {getattr(e, 'code', '?')}: {msg}") from e
-    except URLError as e:
-        raise TranslateError(f"Network error: {e}") from e
-    except Exception as e:
-        raise TranslateError(f"Request failed: {e}") from e
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except Exception as e:
-        raise TranslateError(f"Bad JSON response: {e}") from e
-
-
 @dataclass
 class OpenAICompatConfig:
     base_url: str
@@ -57,6 +27,15 @@ class OpenAICompatConfig:
     timeout_s: float = 60.0
     max_retries: int = 2
     prompt_version: str = "translate_v1"
+    # Chat-completions output limit. Keeping this set avoids requests that "hang"
+    # behind gateways and makes job completion deterministic.
+    region_max_tokens: int = 256
+    page_max_tokens: int = 4096
+    # "Thinking" / reasoning effort knobs for OpenAI-compatible gateways.
+    # For per-region (single) calls we default to disabled (None).
+    # For page-context calls we default to "high" to maximize quality.
+    region_reasoning_effort: str | None = None
+    page_reasoning_effort: str | None = "high"
 
 
 def load_openai_compat_config() -> OpenAICompatConfig:
@@ -68,6 +47,10 @@ def load_openai_compat_config() -> OpenAICompatConfig:
     timeout_s = float(_env("TRANSLATE_TIMEOUT_S", "60") or "60")
     max_retries = int(float(_env("TRANSLATE_MAX_RETRIES", "2") or "2"))
     prompt_version = _env("TRANSLATE_PROMPT_VERSION", "translate_v1") or "translate_v1"
+    region_max_tokens = int(float(_env("TRANSLATE_REGION_MAX_TOKENS", "256") or "256"))
+    page_max_tokens = int(float(_env("TRANSLATE_PAGE_MAX_TOKENS", "4096") or "4096"))
+    region_reasoning_effort = _env("TRANSLATE_REGION_REASONING_EFFORT", "") or None
+    page_reasoning_effort = _env("TRANSLATE_PAGE_REASONING_EFFORT", "high") or "high"
     return OpenAICompatConfig(
         base_url=base_url,
         api_key=api_key,
@@ -76,29 +59,56 @@ def load_openai_compat_config() -> OpenAICompatConfig:
         timeout_s=timeout_s,
         max_retries=max_retries,
         prompt_version=prompt_version,
+        region_max_tokens=max(1, region_max_tokens),
+        page_max_tokens=max(1, page_max_tokens),
+        region_reasoning_effort=region_reasoning_effort,
+        page_reasoning_effort=page_reasoning_effort,
     )
 
 
-def _chat_completions(cfg: OpenAICompatConfig, messages: list[dict[str, str]]) -> str:
-    url = f"{cfg.base_url}/chat/completions"
-    headers: dict[str, str] = {}
-    if cfg.api_key:
-        headers["Authorization"] = f"Bearer {cfg.api_key}"
-    payload: dict[str, Any] = {
-        "model": cfg.model,
-        "messages": messages,
-        "temperature": float(cfg.temperature),
-    }
+def _chat_completions(
+    cfg: OpenAICompatConfig,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int,
+    reasoning_effort: str | None,
+) -> str:
+    """
+    Use the official OpenAI SDK against an OpenAI-compatible gateway.
+
+    Important behavior:
+    - Always sets max_tokens (to avoid very long/hanging requests behind gateways).
+    - Uses `reasoning_effort` only when requested. For per-region calls we default to None.
+      For page-context calls we default to "high".
+    - Falls back automatically if the gateway rejects `reasoning_effort`.
+    """
+    client = OpenAI(
+        api_key=cfg.api_key,
+        base_url=cfg.base_url,
+        timeout=float(cfg.timeout_s),
+    )
 
     last_err: Exception | None = None
     for attempt in range(max(1, int(cfg.max_retries) + 1)):
         try:
-            data = _post_json(url, payload, headers=headers, timeout_s=cfg.timeout_s)
-            choices = data.get("choices") or []
-            if not choices:
-                raise TranslateError("Empty choices in response.")
-            msg = (choices[0] or {}).get("message") or {}
-            content = str(msg.get("content") or "").strip()
+            kwargs: dict = {
+                "model": cfg.model,
+                "temperature": float(cfg.temperature),
+                "max_tokens": int(max_tokens),
+                "stream": False,
+                "messages": messages,
+            }
+            # Only pass this knob for the "full text" path unless explicitly configured.
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
+            try:
+                resp = client.chat.completions.create(**kwargs)
+            except TypeError:
+                # Gateway/client doesn't accept reasoning_effort (or other kwarg); retry without it.
+                kwargs.pop("reasoning_effort", None)
+                resp = client.chat.completions.create(**kwargs)
+
+            content = str((resp.choices[0].message.content or "")).strip()
             if not content:
                 raise TranslateError("Empty message.content in response.")
             return content
@@ -119,7 +129,12 @@ def translate_region_draft(cfg: OpenAICompatConfig, region_text_zh: str, *, targ
         "Return ONLY the translation text, no explanations."
     )
     user = f"Chinese:\n{text}\n\n{target_lang.upper()} translation:"
-    return _chat_completions(cfg, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+    return _chat_completions(
+        cfg,
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        max_tokens=int(cfg.region_max_tokens),
+        reasoning_effort=cfg.region_reasoning_effort,
+    )
 
 
 def translate_page_context(
@@ -138,7 +153,12 @@ def translate_page_context(
         "Return ONLY the translation text."
     )
     user = f"Chinese page text (blocks separated by delimiter):\n{text}\n\n{target_lang.upper()} translation:"
-    return _chat_completions(cfg, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+    return _chat_completions(
+        cfg,
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        max_tokens=int(cfg.page_max_tokens),
+        reasoning_effort=cfg.page_reasoning_effort,
+    )
 
 
 def translate_region_refine(
@@ -162,5 +182,10 @@ def translate_region_refine(
         f"Chinese block:\n{text}\n\n"
         f"{target_lang.upper()} block translation:"
     )
-    return _chat_completions(cfg, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+    return _chat_completions(
+        cfg,
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        max_tokens=int(cfg.region_max_tokens),
+        reasoning_effort=cfg.region_reasoning_effort,
+    )
 
