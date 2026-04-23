@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import os
 import time
 
-from openai import OpenAI  # type: ignore
+from openai import APIError, BadRequestError, OpenAI  # type: ignore
 
 
 class TranslateError(RuntimeError):
@@ -16,6 +16,18 @@ def _env(name: str, default: str | None = None) -> str | None:
     if v is None or str(v).strip() == "":
         return default
     return str(v)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    v = str(raw).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return bool(default)
 
 
 @dataclass
@@ -32,10 +44,16 @@ class OpenAICompatConfig:
     region_max_tokens: int = 256
     page_max_tokens: int = 4096
     # "Thinking" / reasoning effort knobs for OpenAI-compatible gateways.
-    # For per-region (single) calls we default to disabled (None).
+    # For per-region (single) calls we default to explicitly disabled ("none"),
+    # because some gateways may otherwise return reasoning-only payloads with empty content.
     # For page-context calls we default to "high" to maximize quality.
-    region_reasoning_effort: str | None = None
+    region_reasoning_effort: str | None = "none"
     page_reasoning_effort: str | None = "high"
+    # llama.cpp OpenAI-compat uses chat template kwargs to toggle "thinking" mode
+    # for Qwen3.5-style templates. When enabled:
+    # - page-context: enable_thinking=true
+    # - per-region: enable_thinking=false
+    llamacpp_chat_template_thinking: bool = False
 
 
 def load_openai_compat_config() -> OpenAICompatConfig:
@@ -49,8 +67,9 @@ def load_openai_compat_config() -> OpenAICompatConfig:
     prompt_version = _env("TRANSLATE_PROMPT_VERSION", "translate_v1") or "translate_v1"
     region_max_tokens = int(float(_env("TRANSLATE_REGION_MAX_TOKENS", "256") or "256"))
     page_max_tokens = int(float(_env("TRANSLATE_PAGE_MAX_TOKENS", "4096") or "4096"))
-    region_reasoning_effort = _env("TRANSLATE_REGION_REASONING_EFFORT", "") or None
+    region_reasoning_effort = _env("TRANSLATE_REGION_REASONING_EFFORT", "none") or "none"
     page_reasoning_effort = _env("TRANSLATE_PAGE_REASONING_EFFORT", "high") or "high"
+    llamacpp_chat_template_thinking = _env_bool("TRANSLATE_LLAMACPP_CHAT_TEMPLATE_THINKING", False)
     return OpenAICompatConfig(
         base_url=base_url,
         api_key=api_key,
@@ -63,6 +82,7 @@ def load_openai_compat_config() -> OpenAICompatConfig:
         page_max_tokens=max(1, page_max_tokens),
         region_reasoning_effort=region_reasoning_effort,
         page_reasoning_effort=page_reasoning_effort,
+        llamacpp_chat_template_thinking=bool(llamacpp_chat_template_thinking),
     )
 
 
@@ -118,6 +138,9 @@ def _extract_chat_text(resp: object) -> str:
         except Exception:
             pass
 
+        # Some gateways put output into message.reasoning_content and leave content empty.
+        # We do NOT treat it as translation output, but it's useful for diagnostics upstream.
+
     # Some compat servers return "text" per choice.
     try:
         s = str(getattr(ch0, "text", "") or "").strip()
@@ -135,6 +158,7 @@ def _chat_completions(
     *,
     max_tokens: int,
     reasoning_effort: str | None,
+    enable_thinking: bool | None,
 ) -> str:
     """
     Use the official OpenAI SDK against an OpenAI-compatible gateway.
@@ -157,27 +181,53 @@ def _chat_completions(
             kwargs: dict = {
                 "model": cfg.model,
                 "temperature": float(cfg.temperature),
-                "max_tokens": int(max_tokens),
+                # max_tokens is deprecated and not compatible with some reasoning models.
+                # Use max_completion_tokens (includes visible + reasoning tokens).
+                "max_completion_tokens": int(max_tokens),
                 "stream": False,
                 "messages": messages,
             }
+
+            if cfg.llamacpp_chat_template_thinking and enable_thinking is not None:
+                kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
+                }
+
             # Only pass this knob for the "full text" path unless explicitly configured.
             if reasoning_effort is not None:
                 kwargs["reasoning_effort"] = reasoning_effort
             try:
                 resp = client.chat.completions.create(**kwargs)
             except TypeError:
-                # Gateway/client doesn't accept reasoning_effort (or other kwarg); retry without it.
+                # Client doesn't accept reasoning_effort (or other kwarg); retry without it.
                 kwargs.pop("reasoning_effort", None)
                 resp = client.chat.completions.create(**kwargs)
+            except (BadRequestError, APIError):
+                # Some gateways accept the param name but reject value (e.g. "none")
+                # or only support a subset. Retry without reasoning_effort.
+                if "reasoning_effort" in kwargs:
+                    kwargs.pop("reasoning_effort", None)
+                    resp = client.chat.completions.create(**kwargs)
+                else:
+                    raise
 
             content = _extract_chat_text(resp)
             if not content:
                 try:
                     choice0 = getattr(resp, "choices", [None])[0]
                     msg0 = getattr(choice0, "message", None)
+                    reasoning0 = getattr(msg0, "reasoning_content", None)
                 except Exception:
                     msg0 = None
+                    reasoning0 = None
+                if reasoning0:
+                    # Truncate to keep status/error payloads small.
+                    r = str(reasoning0)
+                    if len(r) > 800:
+                        r = r[:800] + "…"
+                    raise TranslateError(
+                        f"Empty message content in response (message={msg0!r}, reasoning_content={r!r})."
+                    )
                 raise TranslateError(f"Empty message content in response (message={msg0!r}).")
             return content
         except Exception as e:
@@ -202,6 +252,7 @@ def translate_region_draft(cfg: OpenAICompatConfig, region_text_zh: str, *, targ
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         max_tokens=int(cfg.region_max_tokens),
         reasoning_effort=cfg.region_reasoning_effort,
+        enable_thinking=False,
     )
 
 
@@ -226,6 +277,7 @@ def translate_page_context(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         max_tokens=int(cfg.page_max_tokens),
         reasoning_effort=cfg.page_reasoning_effort,
+        enable_thinking=True,
     )
 
 
@@ -255,5 +307,6 @@ def translate_region_refine(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         max_tokens=int(cfg.region_max_tokens),
         reasoning_effort=cfg.region_reasoning_effort,
+        enable_thinking=False,
     )
 
