@@ -181,12 +181,17 @@ def _chat_completions(
             kwargs: dict = {
                 "model": cfg.model,
                 "temperature": float(cfg.temperature),
-                # max_tokens is deprecated and not compatible with some reasoning models.
-                # Use max_completion_tokens (includes visible + reasoning tokens).
-                "max_completion_tokens": int(max_tokens),
                 "stream": False,
                 "messages": messages,
             }
+
+            # OpenAI platform prefers max_completion_tokens; llama.cpp OpenAI-compat typically expects max_tokens.
+            if cfg.llamacpp_chat_template_thinking:
+                kwargs["max_tokens"] = int(max_tokens)
+            else:
+                # max_tokens is deprecated and not compatible with some reasoning models.
+                # Use max_completion_tokens (includes visible + reasoning tokens).
+                kwargs["max_completion_tokens"] = int(max_tokens)
 
             if cfg.llamacpp_chat_template_thinking and enable_thinking is not None:
                 kwargs["extra_body"] = {
