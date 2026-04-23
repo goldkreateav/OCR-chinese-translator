@@ -23,6 +23,9 @@ const modalBackdrop = document.getElementById("modalBackdrop");
 const regionMeta = document.getElementById("regionMeta");
 const regionText = document.getElementById("regionText");
 const copyBtn = document.getElementById("copyBtn");
+const translationMeta = document.getElementById("translationMeta");
+const regionTranslation = document.getElementById("regionTranslation");
+const copyTranslationBtn = document.getElementById("copyTranslationBtn");
 const closeModalBtn = document.getElementById("closeModalBtn");
 const retryOcrBtn = document.getElementById("retryOcrBtn");
 
@@ -175,7 +178,51 @@ function openModal(region) {
   const variant = region.ocr_variant || "n/a";
   regionMeta.textContent = `ID: ${region.region_id} | confidence: ${conf.toFixed(3)} | score: ${score.toFixed(3)} | variant: ${variant}`;
   regionText.value = region.text || "";
+  if (translationMeta) translationMeta.textContent = "loading...";
+  if (regionTranslation) regionTranslation.value = "";
   modalBackdrop.classList.remove("hidden");
+  loadRegionTranslation(region).catch(() => {});
+}
+
+async function loadRegionTranslation(region) {
+  if (!translationMeta || !regionTranslation) return;
+  if (!projectId || !region?.region_id || !region?.page_id) return;
+  const pageId = region.page_id;
+  const regionId = region.region_id;
+  const startedAt = Date.now();
+  for (;;) {
+    const resp = await fetch(
+      `/api/projects/${projectId}/pages/${pageId}/translations/region/${regionId}?lang=ru`
+    );
+    if (resp.ok) {
+      const payload = await resp.json();
+      const sDraft = payload.status_draft || "pending";
+      const sRef = payload.status_refine || "pending";
+      const refined = payload.refined_translation;
+      const draft = payload.draft_translation;
+      if (refined) {
+        translationMeta.textContent = `refined (${sRef})`;
+        regionTranslation.value = refined;
+        return;
+      }
+      if (draft) {
+        translationMeta.textContent = `draft (${sDraft}) → refining...`;
+        regionTranslation.value = draft;
+      } else if (payload.error_draft || payload.error_refine) {
+        translationMeta.textContent = "error";
+        regionTranslation.value = String(
+          payload.error_refine || payload.error_draft || "Translation failed"
+        );
+        return;
+      } else {
+        translationMeta.textContent = `pending (draft:${sDraft}, refine:${sRef})`;
+        regionTranslation.value = "";
+      }
+    }
+    if (!currentRegion || currentRegion.region_id !== regionId) return;
+    if (Date.now() - startedAt > 30000) return;
+    await new Promise((r) => setTimeout(r, 900));
+  }
 }
 
 function confidenceStyle(conf) {
@@ -293,6 +340,12 @@ closeModalBtn.addEventListener("click", () => {
 copyBtn.addEventListener("click", async () => {
   await navigator.clipboard.writeText(regionText.value || "");
 });
+
+if (copyTranslationBtn) {
+  copyTranslationBtn.addEventListener("click", async () => {
+    await navigator.clipboard.writeText((regionTranslation && regionTranslation.value) || "");
+  });
+}
 
 retryOcrBtn.addEventListener("click", async () => {
   if (!projectId || !currentRegion?.region_id) return;

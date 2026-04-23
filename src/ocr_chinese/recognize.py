@@ -1064,6 +1064,7 @@ def build_region_records(
     region_crops_root: Path | None = None,
     ocr_profile: dict[str, Any] | None = None,
     progress_callback: Any | None = None,
+    region_callback: Any | None = None,
 ) -> list[dict[str, Any]]:
     if should_parallelize_ocr(len(proposals), recognizer.config):
         return build_region_records_parallel(
@@ -1134,6 +1135,11 @@ def build_region_records(
             except StopIteration:
                 pass
         records.append(record)
+        if region_callback:
+            try:
+                region_callback(record)
+            except Exception:
+                pass
         if progress_callback and ((idx + 1) % 3 == 0 or (idx + 1) == len(proposals)):
             try:
                 progress_callback(
@@ -1186,6 +1192,7 @@ def build_region_records_parallel(
     region_crops_root: Path | None = None,
     ocr_profile: dict[str, Any] | None = None,
     progress_callback: Any | None = None,
+    region_callback: Any | None = None,
 ) -> list[dict[str, Any]]:
     # RapidOCR benefits from threading here: avoids pickling large numpy arrays to subprocesses.
     if (recognition_config.backend or "").lower() == "rapidocr":
@@ -1197,6 +1204,7 @@ def build_region_records_parallel(
             region_crops_root=region_crops_root,
             ocr_profile=ocr_profile,
             progress_callback=progress_callback,
+            region_callback=region_callback,
         )
     items: list[dict[str, Any]] = []
     page_crop_dir: Path | None = None
@@ -1335,6 +1343,7 @@ def build_region_records_parallel_threaded(
     region_crops_root: Path | None = None,
     ocr_profile: dict[str, Any] | None = None,
     progress_callback: Any | None = None,
+    region_callback: Any | None = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     page_crop_dir: Path | None = None
@@ -1379,6 +1388,11 @@ def build_region_records_parallel_threaded(
         for fut in as_completed(futures):
             rec = fut.result()
             records.append(rec)
+            if region_callback:
+                try:
+                    region_callback(rec)
+                except Exception:
+                    pass
             done_count += 1
             if progress_callback and (done_count % 5 == 0 or done_count == len(items)):
                 try:

@@ -45,9 +45,14 @@
         <div class="meta">
           <span id="regionMeta"></span>
         </div>
+        <div class="meta">
+          <span class="muted">Translation (RU):</span> <span id="translationMeta" class="mono"></span>
+        </div>
         <textarea id="regionText" rows="6"></textarea>
+        <textarea id="regionTranslation" rows="6" placeholder="Перевод появится здесь..." readonly></textarea>
         <div class="modal-actions">
           <button id="copyBtn">Copy</button>
+          <button id="copyTranslationBtn">Copy translation</button>
           <button id="retryOcrBtn">Retry OCR (accurate)</button>
           <button id="closeModalBtn">Close</button>
         </div>

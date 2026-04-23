@@ -121,6 +121,18 @@ def create_app(
             regions=region_models,
         )
 
+    @app.get("/api/projects/{project_id}/pages/{page}/translations/status")
+    async def translations_status(project_id: str, page: str, lang: str = "ru") -> JSONResponse:
+        page_id = service.normalize_page_id(page)
+        return JSONResponse(service.load_translation_status(project_id, page_id, lang=lang))
+
+    @app.get("/api/projects/{project_id}/pages/{page}/translations/region/{region_id}")
+    async def translations_region(
+        project_id: str, page: str, region_id: str, lang: str = "ru"
+    ) -> JSONResponse:
+        page_id = service.normalize_page_id(page)
+        return JSONResponse(service.load_region_translation(project_id, page_id, region_id, lang=lang))
+
     @app.get("/api/projects/{project_id}/pages/{page}/image")
     async def page_image(project_id: str, page: str) -> FileResponse:
         page_id = service.normalize_page_id(page)

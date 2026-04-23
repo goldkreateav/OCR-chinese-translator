@@ -164,6 +164,8 @@ def precompute_region_text(
     output_dir: Path,
     recognition_config: RecognitionConfig | None = None,
     progress_callback: Callable[[dict], None] | None = None,
+    region_ready_callback: Callable[[str, dict], None] | None = None,
+    page_done_callback: Callable[[str, list[dict]], None] | None = None,
 ) -> dict:
     rendered_dir = output_dir / "rendered_pages"
     proposals_dir = output_dir / "proposals"
@@ -230,6 +232,11 @@ def precompute_region_text(
             regions = json.loads(cache_file.read_text(encoding="utf-8")).get("regions", [])
             profiling["cache_hits"] += 1
             out_path = save_page_regions(regions_dir, page_id, regions)
+            if page_done_callback:
+                try:
+                    page_done_callback(page_id, list(regions))
+                except Exception:
+                    pass
             page_summary = {
                 "page_id": page_id,
                 "raw_regions_count": len(raw_proposals),
@@ -278,6 +285,9 @@ def precompute_region_text(
             region_crops_root=region_crops_dir,
             ocr_profile=page_ocr_profile,
             progress_callback=on_region_progress,
+            region_callback=(
+                (lambda rec, pid=page_id: region_ready_callback(pid, rec)) if region_ready_callback else None
+            ),
         )
         ocr_ms = (time.perf_counter() - t_ocr) * 1000.0
         profiling["ocr_ms"] += ocr_ms
@@ -285,6 +295,11 @@ def precompute_region_text(
             region.pop("ocr_profile", None)
         out_path = save_page_regions(regions_dir, page_id, regions)
         cache_file.write_text(json.dumps({"regions": regions}, ensure_ascii=False), encoding="utf-8")
+        if page_done_callback:
+            try:
+                page_done_callback(page_id, list(regions))
+            except Exception:
+                pass
         variant_distribution = count_variants(regions)
         not_found_ratio = count_not_found_ratio(regions)
         page_summary = {
@@ -341,6 +356,8 @@ def run_mask_pipeline_with_regions(
     gt_masks_dir: Path | None = None,
     recognition_config: RecognitionConfig | None = None,
     progress_callback: Callable[[dict], None] | None = None,
+    region_ready_callback: Callable[[str, dict], None] | None = None,
+    page_done_callback: Callable[[str, list[dict]], None] | None = None,
 ) -> dict:
     started_at = time.perf_counter()
     if progress_callback:
@@ -380,6 +397,8 @@ def run_mask_pipeline_with_regions(
         output_dir=output_dir,
         recognition_config=recognition_config,
         progress_callback=progress_callback,
+        region_ready_callback=region_ready_callback,
+        page_done_callback=page_done_callback,
     )
     total_ms = (time.perf_counter() - started_at) * 1000.0
     mask_profile = report.get("profiling", {})

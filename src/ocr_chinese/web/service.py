@@ -2,15 +2,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
+import queue
+import threading
+import time
 import uuid
 
 from fastapi import HTTPException, UploadFile
 
 from ..pipeline import PipelineConfig, run_mask_pipeline_with_regions
 from ..recognize import RecognitionConfig, RegionTextRecognizer, extract_region_roi
+from ..translate import (
+    OpenAICompatConfig,
+    load_openai_compat_config,
+    translate_page_context,
+    translate_region_draft,
+    translate_region_refine,
+)
 
 
 def _utc_now() -> str:
@@ -30,6 +41,298 @@ class ProjectService:
     def __init__(self, root_dir: Path):
         self.root_dir = root_dir
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._translate_cfg: OpenAICompatConfig | None = None
+        self._translate_queue: "queue.Queue[dict]" = queue.Queue()
+        self._translate_threads: list[threading.Thread] = []
+        self._translate_started = False
+
+    def _ensure_translate_workers(self) -> None:
+        if self._translate_started:
+            return
+        self._translate_started = True
+        workers = int(os.getenv("TRANSLATE_WORKERS", "2") or "2")
+        workers = max(1, min(6, workers))
+        for i in range(workers):
+            t = threading.Thread(target=self._translate_worker_loop, name=f"translate-worker-{i}", daemon=True)
+            t.start()
+            self._translate_threads.append(t)
+
+    def _translate_worker_loop(self) -> None:
+        while True:
+            job = self._translate_queue.get()
+            try:
+                self._run_translate_job(job)
+            except Exception:
+                # Errors are persisted per-job into translation JSON; avoid killing the worker.
+                pass
+            finally:
+                try:
+                    self._translate_queue.task_done()
+                except Exception:
+                    pass
+
+    def _translate_config(self) -> OpenAICompatConfig:
+        if self._translate_cfg is None:
+            self._translate_cfg = load_openai_compat_config()
+        return self._translate_cfg
+
+    def _translations_dir(self, project_id: str) -> Path:
+        d = self._project_dir(project_id) / "output" / "translations"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _page_context_path(self, project_id: str, page_id: str, lang: str) -> Path:
+        return self._translations_dir(project_id) / f"{page_id}_page_context_{lang}.json"
+
+    def _page_regions_translation_path(self, project_id: str, page_id: str, lang: str) -> Path:
+        return self._translations_dir(project_id) / f"{page_id}_regions_{lang}.json"
+
+    @staticmethod
+    def _hash_text(*parts: str) -> str:
+        h = hashlib.sha1()
+        for p in parts:
+            h.update((p or "").encode("utf-8"))
+            h.update(b"\n")
+        return h.hexdigest()[:20]
+
+    def _load_regions_translation_payload(self, project_id: str, page_id: str, lang: str) -> dict:
+        path = self._page_regions_translation_path(project_id, page_id, lang)
+        if not path.exists():
+            return {"page_id": page_id, "target_lang": lang, "items": {}}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"page_id": page_id, "target_lang": lang, "items": {}}
+
+    def _write_regions_translation_payload(self, project_id: str, page_id: str, lang: str, payload: dict) -> None:
+        path = self._page_regions_translation_path(project_id, page_id, lang)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _upsert_region_translation(
+        self,
+        project_id: str,
+        page_id: str,
+        region_id: str,
+        *,
+        lang: str,
+        source_text: str,
+        patch: dict,
+    ) -> None:
+        payload = self._load_regions_translation_payload(project_id, page_id, lang)
+        items = payload.get("items") or {}
+        entry = items.get(region_id) or {}
+        entry.setdefault("source_text", source_text)
+        entry.update(patch or {})
+        entry["updated_at"] = _utc_now()
+        items[region_id] = entry
+        payload["items"] = items
+        self._write_regions_translation_payload(project_id, page_id, lang, payload)
+
+    def enqueue_region_draft(self, project_id: str, page_id: str, region: dict, *, lang: str = "ru") -> None:
+        text = str(region.get("text") or "").strip()
+        if not text or text == "Текст не найден":
+            return
+        self._ensure_translate_workers()
+        self._translate_queue.put(
+            {
+                "type": "region_draft",
+                "project_id": project_id,
+                "page_id": page_id,
+                "region_id": str(region.get("region_id") or ""),
+                "lang": lang,
+                "source_text": text,
+            }
+        )
+
+    def enqueue_page_context_and_refine(
+        self, project_id: str, page_id: str, regions: list[dict], *, lang: str = "ru"
+    ) -> None:
+        self._ensure_translate_workers()
+        page_text = "\n---\n".join(
+            str(r.get("text") or "").strip()
+            for r in (regions or [])
+            if str(r.get("text") or "").strip() and str(r.get("text") or "").strip() != "Текст не найден"
+        ).strip()
+        self._translate_queue.put(
+            {
+                "type": "page_context",
+                "project_id": project_id,
+                "page_id": page_id,
+                "lang": lang,
+                "page_text": page_text,
+            }
+        )
+        for r in regions or []:
+            region_id = str(r.get("region_id") or "")
+            text = str(r.get("text") or "").strip()
+            if not region_id or not text or text == "Текст не найден":
+                continue
+            self._translate_queue.put(
+                {
+                    "type": "region_refine",
+                    "project_id": project_id,
+                    "page_id": page_id,
+                    "region_id": region_id,
+                    "lang": lang,
+                    "source_text": text,
+                }
+            )
+
+    def _run_translate_job(self, job: dict) -> None:
+        cfg = self._translate_config()
+        job_type = str(job.get("type") or "")
+        project_id = str(job.get("project_id") or "")
+        page_id = str(job.get("page_id") or "")
+        lang = str(job.get("lang") or "ru")
+        if not project_id or not page_id or not job_type:
+            return
+
+        if job_type == "page_context":
+            page_text = str(job.get("page_text") or "").strip()
+            if not page_text:
+                return
+            src_hash = self._hash_text(page_text, cfg.model, lang, cfg.prompt_version, "page_context")
+            ctx_path = self._page_context_path(project_id, page_id, lang)
+            if ctx_path.exists():
+                try:
+                    existing = json.loads(ctx_path.read_text(encoding="utf-8"))
+                    if str(existing.get("source_hash") or "") == src_hash:
+                        return
+                except Exception:
+                    pass
+            try:
+                translation = translate_page_context(cfg, page_text, target_lang=lang, delimiter="\n---\n")
+                ctx_path.write_text(
+                    json.dumps(
+                        {
+                            "page_id": page_id,
+                            "target_lang": lang,
+                            "model": cfg.model,
+                            "prompt_version": cfg.prompt_version,
+                            "source_hash": src_hash,
+                            "source_text": page_text,
+                            "context_translation": translation,
+                            "created_at": _utc_now(),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                # Persist page-level error (best-effort)
+                ctx_path.write_text(
+                    json.dumps(
+                        {
+                            "page_id": page_id,
+                            "target_lang": lang,
+                            "model": cfg.model,
+                            "prompt_version": cfg.prompt_version,
+                            "source_hash": src_hash,
+                            "error": str(e),
+                            "created_at": _utc_now(),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            return
+
+        if job_type == "region_draft":
+            region_id = str(job.get("region_id") or "")
+            source_text = str(job.get("source_text") or "").strip()
+            if not region_id or not source_text:
+                return
+            src_hash = self._hash_text(source_text, cfg.model, lang, cfg.prompt_version, "region_draft")
+            payload = self._load_regions_translation_payload(project_id, page_id, lang)
+            existing = ((payload.get("items") or {}).get(region_id) or {})
+            if str(existing.get("draft_source_hash") or "") == src_hash and str(existing.get("status_draft") or "") == "done":
+                return
+            self._upsert_region_translation(
+                project_id,
+                page_id,
+                region_id,
+                lang=lang,
+                source_text=source_text,
+                patch={"status_draft": "running", "draft_source_hash": src_hash, "error_draft": None},
+            )
+            try:
+                translation = translate_region_draft(cfg, source_text, target_lang=lang)
+                self._upsert_region_translation(
+                    project_id,
+                    page_id,
+                    region_id,
+                    lang=lang,
+                    source_text=source_text,
+                    patch={"draft_translation": translation, "status_draft": "done"},
+                )
+            except Exception as e:
+                self._upsert_region_translation(
+                    project_id,
+                    page_id,
+                    region_id,
+                    lang=lang,
+                    source_text=source_text,
+                    patch={"status_draft": "error", "error_draft": str(e)},
+                )
+            return
+
+        if job_type == "region_refine":
+            region_id = str(job.get("region_id") or "")
+            source_text = str(job.get("source_text") or "").strip()
+            if not region_id or not source_text:
+                return
+            ctx_path = self._page_context_path(project_id, page_id, lang)
+            if not ctx_path.exists():
+                # Context not ready yet; requeue with a small delay.
+                time.sleep(0.5)
+                self._translate_queue.put(job)
+                return
+            try:
+                ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
+            except Exception:
+                time.sleep(0.5)
+                self._translate_queue.put(job)
+                return
+            context_translation = str(ctx.get("context_translation") or "").strip()
+            if not context_translation:
+                return
+
+            src_hash = self._hash_text(source_text, context_translation, cfg.model, lang, cfg.prompt_version, "region_refine")
+            payload = self._load_regions_translation_payload(project_id, page_id, lang)
+            existing = ((payload.get("items") or {}).get(region_id) or {})
+            if str(existing.get("refine_source_hash") or "") == src_hash and str(existing.get("status_refine") or "") == "done":
+                return
+
+            self._upsert_region_translation(
+                project_id,
+                page_id,
+                region_id,
+                lang=lang,
+                source_text=source_text,
+                patch={"status_refine": "running", "refine_source_hash": src_hash, "error_refine": None},
+            )
+            try:
+                translation = translate_region_refine(cfg, source_text, context_translation, target_lang=lang)
+                self._upsert_region_translation(
+                    project_id,
+                    page_id,
+                    region_id,
+                    lang=lang,
+                    source_text=source_text,
+                    patch={"refined_translation": translation, "status_refine": "done"},
+                )
+            except Exception as e:
+                self._upsert_region_translation(
+                    project_id,
+                    page_id,
+                    region_id,
+                    lang=lang,
+                    source_text=source_text,
+                    patch={"status_refine": "error", "error_refine": str(e)},
+                )
+            return
 
     def create_project(self, upload: UploadFile) -> dict:
         project_id = uuid.uuid4().hex[:12]
@@ -74,6 +377,7 @@ class ProjectService:
             "total_regions": 0,
         }
         status["updated_at"] = _utc_now()
+        status["translate_status"] = "running"
         self._write_status(project_id, status)
 
         try:
@@ -125,10 +429,17 @@ class ProjectService:
                 config=config,
                 recognition_config=rec_cfg,
                 progress_callback=on_progress,
+                region_ready_callback=lambda page_id, rec: self.enqueue_region_draft(
+                    project_id, str(page_id), rec, lang="ru"
+                ),
+                page_done_callback=lambda page_id, regions: self.enqueue_page_context_and_refine(
+                    project_id, str(page_id), regions, lang="ru"
+                ),
             )
             status["status"] = "done"
             status["pages"] = len(report.get("pages", []))
             status["updated_at"] = _utc_now()
+            status["translate_status"] = "running"
             self._write_status(project_id, status)
             return {"status": status, "report": report}
         except Exception as exc:
@@ -137,6 +448,52 @@ class ProjectService:
             status["updated_at"] = _utc_now()
             self._write_status(project_id, status)
             raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+
+    def load_translation_status(self, project_id: str, page_id: str, *, lang: str = "ru") -> dict:
+        ctx_path = self._page_context_path(project_id, page_id, lang)
+        ctx_ready = ctx_path.exists()
+        ctx_error = None
+        if ctx_ready:
+            try:
+                ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
+                ctx_error = ctx.get("error")
+                if ctx_error:
+                    ctx_ready = False
+            except Exception:
+                ctx_ready = False
+        payload = self._load_regions_translation_payload(project_id, page_id, lang)
+        items = payload.get("items") or {}
+        draft_done = sum(1 for it in items.values() if str(it.get("status_draft") or "") == "done")
+        draft_err = sum(1 for it in items.values() if str(it.get("status_draft") or "") == "error")
+        refine_done = sum(1 for it in items.values() if str(it.get("status_refine") or "") == "done")
+        refine_err = sum(1 for it in items.values() if str(it.get("status_refine") or "") == "error")
+        return {
+            "page_id": page_id,
+            "lang": lang,
+            "page_context_ready": bool(ctx_ready),
+            "page_context_error": ctx_error,
+            "regions_total": int(len(items)),
+            "draft_done": int(draft_done),
+            "draft_error": int(draft_err),
+            "refine_done": int(refine_done),
+            "refine_error": int(refine_err),
+        }
+
+    def load_region_translation(self, project_id: str, page_id: str, region_id: str, *, lang: str = "ru") -> dict:
+        payload = self._load_regions_translation_payload(project_id, page_id, lang)
+        entry = (payload.get("items") or {}).get(region_id) or {}
+        return {
+            "page_id": page_id,
+            "region_id": region_id,
+            "lang": lang,
+            "draft_translation": entry.get("draft_translation"),
+            "refined_translation": entry.get("refined_translation"),
+            "status_draft": entry.get("status_draft") or ("pending" if not entry else "unknown"),
+            "status_refine": entry.get("status_refine") or ("pending" if not entry else "unknown"),
+            "error_draft": entry.get("error_draft"),
+            "error_refine": entry.get("error_refine"),
+            "updated_at": entry.get("updated_at"),
+        }
 
     def _build_recognition_config(self, options: GenerateOptions) -> RecognitionConfig:
         mode = (options.ocr_mode or "eco").lower()
