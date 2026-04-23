@@ -57,7 +57,7 @@ class RecognitionConfig:
     batch_size: int = 64
     ocr_device: str = "cpu"  # cpu | cuda
     allow_fallback: bool = True
-    debug_raw_results: bool = False
+    debug_raw_results: bool = True
 
 
 def _preview_obj(obj: Any, *, max_items: int = 6, max_str: int = 400, depth: int = 0, max_depth: int = 3) -> Any:
@@ -665,7 +665,7 @@ class RegionTextRecognizer:
             call_ms = (time.perf_counter() - t0) * 1000.0
             text, confidence = _parse_recognition_result(result)
             score = score_ocr_result(text, confidence)
-            if self.config.profile_variant_calls:
+            if self.config.profile_variant_calls or self.config.debug_raw_results:
                 payload = {
                     "variant": variant_name,
                     "backend": "paddleocr",
@@ -692,7 +692,9 @@ class RegionTextRecognizer:
                 "winner_variant": best_variant,
                 "winner_confidence": float(best_conf),
                 "winner_score": float(max(0.0, best_score)),
-                "variant_calls": variant_calls if self.config.profile_variant_calls else [],
+                "variant_calls": variant_calls
+                if (self.config.profile_variant_calls or self.config.debug_raw_results)
+                else [],
             }
         )
         return normalize_text(best_text), best_conf, best_variant, float(max(0.0, best_score))
