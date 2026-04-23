@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .dotenv import load_default_env
 from .labeling import SplitConfig, export_cvat_tasks_stub, prepare_labeling_manifest
 from .pipeline import PipelineConfig, run_mask_pipeline
 from .training import (
@@ -89,10 +90,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="OCR worker processes (used for balanced/max modes).",
     )
+    web_cmd.add_argument(
+        "--ocr-device",
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="OCR inference device for RapidOCR backends.",
+    )
     return parser
 
 
 def main() -> None:
+    # Auto-load env vars for Web UI / translation / OCR bridge.
+    # This keeps deployment simple: put variables into .env in the working dir.
+    load_default_env()
     parser = build_parser()
     args = parser.parse_args()
 
@@ -151,6 +161,7 @@ def main() -> None:
             default_poppler_path=str(args.poppler_path) if args.poppler_path else None,
             default_ocr_mode=args.ocr_mode,
             default_ocr_workers=args.ocr_workers,
+            default_ocr_device=args.ocr_device,
         )
         uvicorn.run(app, host=args.host, port=args.port)
         return
