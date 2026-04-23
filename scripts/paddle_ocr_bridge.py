@@ -8,7 +8,7 @@ import sys
 import cv2
 
 
-def _preview_obj(obj, *, max_items: int = 24, max_str: int = 400, depth: int = 0, max_depth: int = 3):
+def _preview_obj(obj, *, max_items: int = 6, max_str: int = 400, depth: int = 0, max_depth: int = 3):
     if depth > max_depth:
         return "<max_depth>"
     if obj is None or isinstance(obj, (bool, int, float)):
@@ -26,13 +26,7 @@ def _preview_obj(obj, *, max_items: int = 24, max_str: int = 400, depth: int = 0
                 sample[str(k)] = _preview_obj(obj.get(k), max_items=max_items, max_str=max_str, depth=depth + 1)
             except Exception:
                 sample[str(k)] = "<error>"
-        return {
-            "__type__": "dict",
-            "keys": [str(k) for k in keys[:max_items]],
-            "keys_total": len(keys),
-            "keys_truncated": len(keys) > max_items,
-            "sample": sample,
-        }
+        return {"__type__": "dict", "keys": [str(k) for k in keys[:max_items]], "sample": sample}
     if isinstance(obj, (list, tuple)):
         items = []
         for x in list(obj)[:max_items]:
@@ -53,75 +47,6 @@ def _preview_obj(obj, *, max_items: int = 24, max_str: int = 400, depth: int = 0
     except Exception:
         r = "<unrepr>"
     return {"__type__": type(obj).__name__, "repr": _preview_obj(r, depth=depth + 1)}
-
-
-def _best_text_from_any(result) -> tuple[str, float]:
-    """
-    PaddleOCR/PaddleX outputs vary wildly across versions.
-    Try to find the best (text, score) candidate anywhere inside nested dict/list structures.
-    """
-    best_text = ""
-    best_score = 0.0
-
-    def consider(text, score) -> None:
-        nonlocal best_text, best_score
-        try:
-            t = str(text or "").strip()
-        except Exception:
-            t = ""
-        if not t:
-            return
-        try:
-            s = float(score)
-        except Exception:
-            s = 0.0
-        if s > best_score:
-            best_text, best_score = t, s
-
-    def walk(x) -> None:
-        if x is None:
-            return
-        # Common pair formats: ["TEXT", 0.98] or ("TEXT", 0.98)
-        if isinstance(x, (list, tuple)):
-            if len(x) >= 2 and isinstance(x[0], str):
-                consider(x[0], x[1])
-            for it in x:
-                walk(it)
-            return
-        if isinstance(x, dict):
-            # Direct fields
-            if "rec_text" in x or "rec_score" in x:
-                consider(x.get("rec_text"), x.get("rec_score"))
-            if "text" in x and ("score" in x or "prob" in x or "confidence" in x):
-                consider(x.get("text"), x.get("score", x.get("prob", x.get("confidence"))))
-
-            # Vectorized fields (common in PaddleX)
-            if isinstance(x.get("rec_texts"), list) and isinstance(x.get("rec_scores"), list):
-                texts = x.get("rec_texts") or []
-                scores = x.get("rec_scores") or []
-                for i in range(min(len(texts), len(scores))):
-                    consider(texts[i], scores[i])
-            if isinstance(x.get("rec_res"), list):
-                for it in x.get("rec_res") or []:
-                    walk(it)
-
-            # Sometimes recognition outputs are under "result"/"results"/"res"
-            for k in ("result", "results", "res", "rec", "rec_result", "rec_results"):
-                if k in x:
-                    walk(x.get(k))
-
-            # Fallback: walk all values (but avoid very deep recursion)
-            for v in x.values():
-                walk(v)
-            return
-        # objects: try common attrs
-        for name_text, name_score in (("rec_text", "rec_score"), ("text", "score")):
-            if hasattr(x, name_text) and hasattr(x, name_score):
-                consider(getattr(x, name_text), getattr(x, name_score))
-        return
-
-    walk(result)
-    return best_text, float(best_score)
 
 
 def main() -> None:
@@ -195,11 +120,22 @@ def main() -> None:
             else:
                 result = ocr.ocr(img)
 
+    text = ""
+    conf = 0.0
     raw_preview = None
     try:
-        text, conf = _best_text_from_any(result)
+        # PaddleOCR rec-only formats vary; normalize to best candidate.
+        # Common: [[("text", 0.98)]] or [("text", 0.98)] or [["text", 0.98]]
+        if isinstance(result, list) and result:
+            r0 = result[0]
+            if isinstance(r0, list) and r0:
+                r0 = r0[0]
+            if isinstance(r0, (list, tuple)) and len(r0) >= 2:
+                text = str(r0[0] or "")
+                conf = float(r0[1] or 0.0)
     except Exception:
-        text, conf = "", 0.0
+        text = ""
+        conf = 0.0
     try:
         raw_preview = _preview_obj(result)
     except Exception:
