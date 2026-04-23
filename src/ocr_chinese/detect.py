@@ -89,7 +89,9 @@ class OrientedTextDetector:
             except ImportError:
                 PaddleOCR = None
             if PaddleOCR is None:
-                return
+                # PaddleOCR isn't available in this environment; keep going so we can
+                # fall back to RapidOCR (or MSER as a last resort).
+                self._paddle = None
             try:
                 # Older PaddleOCR API
                 self._paddle = PaddleOCR(
