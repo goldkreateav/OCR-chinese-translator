@@ -56,6 +56,56 @@ class ProjectService:
         self._translate_metrics: dict[str, dict[str, int]] = {}
         self._generate_threads: dict[str, threading.Thread] = {}
         self._generate_lock = threading.Lock()
+        self._regions_lock = threading.Lock()
+        self._regions_page_locks: dict[str, threading.Lock] = {}
+
+    def _page_regions_lock(self, project_id: str, page_id: str) -> threading.Lock:
+        key = f"{project_id}:{page_id}"
+        with self._regions_lock:
+            lock = self._regions_page_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._regions_page_locks[key] = lock
+            return lock
+
+    def _upsert_page_region(self, project_id: str, page_id: str, region: dict) -> None:
+        """
+        Incrementally persist OCR regions while the pipeline is running.
+        Stored in output/regions/{page_id}_regions.json so /assets can surface partial results.
+        """
+        region_id = str(region.get("region_id") or "").strip()
+        if not region_id:
+            return
+        path = self._page_regions_path(project_id, page_id)
+        lock = self._page_regions_lock(project_id, page_id)
+        with lock:
+            payload = {"page_id": page_id, "regions": []}
+            if path.exists():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    payload = {"page_id": page_id, "regions": []}
+            regions = payload.get("regions") or []
+            if not isinstance(regions, list):
+                regions = []
+            by_id: dict[str, dict] = {}
+            for r in regions:
+                try:
+                    rid = str((r or {}).get("region_id") or "").strip()
+                except Exception:
+                    rid = ""
+                if rid:
+                    by_id[rid] = dict(r or {})
+            by_id[region_id] = dict(region)
+            merged = list(by_id.values())
+            # Keep stable ordering for UI: sort by region_id.
+            try:
+                merged.sort(key=lambda x: str(x.get("region_id") or ""))
+            except Exception:
+                pass
+            payload["page_id"] = page_id
+            payload["regions"] = merged
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _translate_metrics_snapshot(self, project_id: str) -> dict[str, int]:
         with self._translate_metrics_lock:
@@ -270,6 +320,103 @@ class ProjectService:
 
     def _page_regions_translation_path(self, project_id: str, page_id: str, lang: str) -> Path:
         return self._translations_dir(project_id) / f"{page_id}_regions_{lang}.json"
+
+    def _regions_dir(self, project_id: str) -> Path:
+        d = self._project_dir(project_id) / "output" / "regions"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _page_regions_path(self, project_id: str, page_id: str) -> Path:
+        return self._regions_dir(project_id) / f"{page_id}_regions.json"
+
+    def enqueue_missing_translations_from_report(self, project_id: str, report: dict, *, lang: str = "ru") -> dict:
+        """
+        Import-mode helper: persist regions from exported report.json into the project and
+        enqueue translation jobs for anything not yet translated.
+        """
+        pages = report.get("pages") or []
+        regions_by_page = report.get("regionsByPage") or {}
+        if not isinstance(regions_by_page, dict):
+            raise HTTPException(status_code=400, detail="Invalid report: regionsByPage must be object.")
+
+        # Persist regions so translation totals/status work (load_translation_status reads output/regions).
+        persisted_pages = 0
+        persisted_regions = 0
+        for p in pages:
+            page_id = str((p or {}).get("page_id") or "").strip()
+            if not page_id:
+                continue
+            regions = regions_by_page.get(page_id) or []
+            if not isinstance(regions, list):
+                continue
+            out_path = self._page_regions_path(project_id, page_id)
+            try:
+                out_path.write_text(json.dumps({"page_id": page_id, "regions": regions}, ensure_ascii=False, indent=2), encoding="utf-8")
+                persisted_pages += 1
+                persisted_regions += int(len(regions))
+            except Exception:
+                # best-effort
+                pass
+
+        # Enqueue missing jobs (dedupe against existing translation payload).
+        queued_page_context = 0
+        queued_region_draft = 0
+        queued_region_refine = 0
+
+        for p in pages:
+            page_id = str((p or {}).get("page_id") or "").strip()
+            if not page_id:
+                continue
+            regions = regions_by_page.get(page_id) or []
+            if not isinstance(regions, list):
+                continue
+
+            # Always enqueue page context if we have any text regions; worker will skip if empty.
+            self.enqueue_page_context_and_refine(project_id, page_id, regions, lang=lang)
+            queued_page_context += 1
+
+            payload = self._load_regions_translation_payload(project_id, page_id, lang)
+            items = payload.get("items") or {}
+
+            for r in regions:
+                region_id = str((r or {}).get("region_id") or "").strip()
+                text = str((r or {}).get("text") or "").strip()
+                if not region_id or not text or text == "Текст не найден":
+                    continue
+
+                existing = items.get(region_id) or {}
+                if str(existing.get("status_draft") or "") != "done" and not str(existing.get("draft_translation") or "").strip():
+                    self.enqueue_region_draft(project_id, page_id, {"region_id": region_id, "text": text}, lang=lang)
+                    queued_region_draft += 1
+
+                if str(existing.get("status_refine") or "") != "done" and not str(existing.get("refined_translation") or "").strip():
+                    # refine jobs need page context; worker will requeue until ready.
+                    self._ensure_translate_workers()
+                    self._translate_metrics_bump(project_id, queued=1)
+                    self._translate_queue.put(
+                        {
+                            "type": "region_refine",
+                            "project_id": project_id,
+                            "page_id": page_id,
+                            "region_id": region_id,
+                            "lang": lang,
+                            "source_text": text,
+                            "attempt": 0,
+                        }
+                    )
+                    queued_region_refine += 1
+
+        return {
+            "project_id": project_id,
+            "lang": lang,
+            "persisted_pages": int(persisted_pages),
+            "persisted_regions": int(persisted_regions),
+            "queued": {
+                "page_context": int(queued_page_context),
+                "region_draft": int(queued_region_draft),
+                "region_refine": int(queued_region_refine),
+            },
+        }
 
     @staticmethod
     def _hash_text(*parts: str) -> str:
@@ -750,8 +897,9 @@ class ProjectService:
                 config=config,
                 recognition_config=rec_cfg,
                 progress_callback=on_progress,
-                region_ready_callback=lambda page_id, rec: self.enqueue_region_draft(
-                    project_id, str(page_id), rec, lang="ru"
+                region_ready_callback=lambda page_id, rec: (
+                    self._upsert_page_region(project_id, str(page_id), rec),
+                    self.enqueue_region_draft(project_id, str(page_id), rec, lang="ru"),
                 ),
                 page_done_callback=lambda page_id, regions: self.enqueue_page_context_and_refine(
                     project_id, str(page_id), regions, lang="ru"
@@ -892,6 +1040,27 @@ class ProjectService:
             "error_refine": entry.get("error_refine"),
             "updated_at": entry.get("updated_at"),
         }
+
+    def load_page_translations(self, project_id: str, page_id: str, *, lang: str = "ru") -> dict:
+        """
+        Return all region translations for a page in one request to avoid N+1 polling.
+        """
+        payload = self._load_regions_translation_payload(project_id, page_id, lang)
+        items = payload.get("items") or {}
+        out: dict[str, dict] = {}
+        for region_id, entry in (items or {}).items():
+            e = entry or {}
+            out[str(region_id)] = {
+                "region_id": str(region_id),
+                "draft_translation": e.get("draft_translation"),
+                "refined_translation": e.get("refined_translation"),
+                "status_draft": e.get("status_draft") or ("pending" if not e else "unknown"),
+                "status_refine": e.get("status_refine") or ("pending" if not e else "unknown"),
+                "error_draft": e.get("error_draft"),
+                "error_refine": e.get("error_refine"),
+                "updated_at": e.get("updated_at"),
+            }
+        return {"page_id": page_id, "lang": lang, "items": out}
 
     def _build_recognition_config(self, options: GenerateOptions) -> RecognitionConfig:
         mode = (options.ocr_mode or "eco").lower()

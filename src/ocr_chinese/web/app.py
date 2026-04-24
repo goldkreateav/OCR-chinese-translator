@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import Body, FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -109,6 +109,15 @@ def create_app(
         )
         return JSONResponse(payload)
 
+    @app.post("/api/import/projects/{project_id}/translations/enqueue")
+    async def import_enqueue_translations(
+        project_id: str,
+        report: dict = Body(...),
+        lang: str = "ru",
+    ) -> JSONResponse:
+        payload = service.enqueue_missing_translations_from_report(project_id, report, lang=lang)
+        return JSONResponse(payload)
+
     @app.post("/api/projects/{project_id}/generate")
     async def generate(project_id: str, request: GenerateRequest) -> JSONResponse:
         render_backend = request.render_backend or app.state.default_render_backend
@@ -183,6 +192,11 @@ def create_app(
     ) -> JSONResponse:
         page_id = service.normalize_page_id(page)
         return JSONResponse(service.load_region_translation(project_id, page_id, region_id, lang=lang))
+
+    @app.get("/api/projects/{project_id}/pages/{page}/translations")
+    async def translations_page(project_id: str, page: str, lang: str = "ru") -> JSONResponse:
+        page_id = service.normalize_page_id(page)
+        return JSONResponse(service.load_page_translations(project_id, page_id, lang=lang))
 
     @app.get("/api/projects/{project_id}/pages/{page}/image")
     async def page_image(project_id: str, page: str) -> FileResponse:

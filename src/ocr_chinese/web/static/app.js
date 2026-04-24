@@ -153,6 +153,29 @@ function buildOfflineAssets(report, pageId) {
   return { page_id: pageId, regions: regionsAug };
 }
 
+function countMissingTranslations(report) {
+  const pages = report?.pages || [];
+  const regionsByPage = report?.regionsByPage || {};
+  const tByPage = report?.translationsByPage || {};
+  let missing = 0;
+  for (const p of pages) {
+    const pageId = String(p?.page_id || "");
+    if (!pageId) continue;
+    const regions = regionsByPage?.[pageId] || [];
+    const tRegions = tByPage?.[pageId]?.regions || {};
+    for (const r of regions || []) {
+      const rid = r?.region_id;
+      if (!rid) continue;
+      const text = String(r?.text || "").trim();
+      if (!text || text === "Текст не найден") continue;
+      const t = tRegions?.[rid] || {};
+      const refined = String(t?.refined_translation || "").trim();
+      if (!refined) missing += 1;
+    }
+  }
+  return missing;
+}
+
 function useEtaModel() {
   const refs = useRef({
     ocr: {},
@@ -254,6 +277,7 @@ function App() {
   const [statusPayload, setStatusPayload] = useState(null);
   const [runtimeInfo, setRuntimeInfo] = useState(null);
   const [translationByPage, setTranslationByPage] = useState({});
+  const [pageTranslationsById, setPageTranslationsById] = useState({}); // pageId -> {items: {region_id -> entry}}
   const [assetsByPage, setAssetsByPage] = useState({});
   const [maskOkByPage, setMaskOkByPage] = useState({});
   const [maskNonce, setMaskNonce] = useState(0);
@@ -488,9 +512,10 @@ function App() {
     }
   }
 
-  async function ensureAssets(pid, pageId) {
+  async function ensureAssets(pid, pageId, opts = null) {
     if (!pid || !pageId) return;
-    if (assetsByPage[pageId]) return;
+    const force = Boolean(opts?.force);
+    if (!force && assetsByPage[pageId]) return;
     const resp = await fetch(`/api/projects/${pid}/pages/${pageId}/assets`);
     if (!resp.ok) return;
     const payload = await resp.json();
@@ -535,9 +560,46 @@ function App() {
   }, [projectId, pages, translationByPage]);
 
   useEffect(() => {
+    if (!projectId || pages.length === 0) return undefined;
+    const timer = window.setInterval(async () => {
+      const updates = [];
+      for (const pageId of pages) {
+        try {
+          const resp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations?lang=ru`);
+          if (!resp.ok) continue;
+          const payload = await resp.json();
+          updates.push([pageId, payload]);
+        } catch (_) {
+          // noop
+        }
+      }
+      if (updates.length > 0) {
+        setPageTranslationsById((prev) => {
+          const next = { ...prev };
+          for (const [pageId, payload] of updates) next[pageId] = payload;
+          return next;
+        });
+      }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [projectId, pages]);
+
+  useEffect(() => {
     if (!projectId || !currentPageId) return;
     ensureAssets(projectId, currentPageId);
   }, [projectId, currentPageId]);
+
+  useEffect(() => {
+    if (route !== "workspace") return undefined;
+    if (!projectId || !currentPageId) return undefined;
+    if (statusPayload?.status !== "running") return undefined;
+    const st = String(statusPayload?.stage || "").toLowerCase();
+    if (!st.includes("ocr") && !st.includes("mask")) return undefined;
+    const timer = window.setInterval(() => {
+      ensureAssets(projectId, currentPageId, { force: true });
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [route, projectId, currentPageId, statusPayload?.status, statusPayload?.stage]);
 
   useEffect(() => {
     if (route !== "workspace" || !currentPageId) return undefined;
@@ -585,63 +647,77 @@ function App() {
   }, [currentPageId, statusPayload?.stage]);
 
   useEffect(() => {
-    if (!projectId || !selectedRegion?.region_id || !selectedRegion?.page_id) return undefined;
-    let mounted = true;
-    const startedAt = Date.now();
-    const tick = async () => {
-      try {
-        const resp = await fetch(
-          `/api/projects/${projectId}/pages/${selectedRegion.page_id}/translations/region/${selectedRegion.region_id}?lang=ru`
-        );
-        if (!resp.ok) return;
-        const payload = await resp.json();
-        if (!mounted) return;
-        if (payload.refined_translation) {
-          setRegionTranslation({
-            statusLabel: `refined (${payload.status_refine || "done"})`,
-            text: payload.refined_translation,
-            error: "",
-          });
-          return;
-        }
-        if (payload.draft_translation) {
-          setRegionTranslation({
-            statusLabel: `draft (${payload.status_draft || "done"}) → refining`,
-            text: payload.draft_translation,
-            error: "",
-          });
-          return;
-        }
-        if (payload.error_draft || payload.error_refine) {
-          setRegionTranslation({
-            statusLabel: "error",
-            text: "",
-            error: String(payload.error_refine || payload.error_draft || "Translation failed"),
-          });
-          return;
-        }
-        setRegionTranslation({
-          statusLabel: `pending (draft:${payload.status_draft || "pending"}, refine:${payload.status_refine || "pending"})`,
-          text: "",
-          error: "",
-        });
-      } catch (_) {
-        // noop
-      }
-    };
-    tick();
-    const timer = window.setInterval(() => {
-      if (Date.now() - startedAt > 30000) {
-        window.clearInterval(timer);
+    const effectivePid = projectId || importProjectId;
+    if (!effectivePid || !selectedRegion?.region_id || !selectedRegion?.page_id) return undefined;
+    const pageId = String(selectedRegion.page_id);
+    const regionId = String(selectedRegion.region_id);
+
+    const apply = (entry) => {
+      if (!entry) {
+        setRegionTranslation({ statusLabel: "pending", text: "", error: "" });
         return;
       }
-      tick();
-    }, 1000);
-    return () => {
-      mounted = false;
-      window.clearInterval(timer);
+      if (entry.refined_translation) {
+        setRegionTranslation({
+          statusLabel: `refined (${entry.status_refine || "done"})`,
+          text: entry.refined_translation,
+          error: "",
+        });
+        return;
+      }
+      if (entry.draft_translation) {
+        setRegionTranslation({
+          statusLabel: `draft (${entry.status_draft || "done"}) → refining`,
+          text: entry.draft_translation,
+          error: "",
+        });
+        return;
+      }
+      if (entry.error_draft || entry.error_refine) {
+        setRegionTranslation({
+          statusLabel: "error",
+          text: "",
+          error: String(entry.error_refine || entry.error_draft || "Translation failed"),
+        });
+        return;
+      }
+      setRegionTranslation({
+        statusLabel: `pending (draft:${entry.status_draft || "pending"}, refine:${entry.status_refine || "pending"})`,
+        text: "",
+        error: "",
+      });
     };
-  }, [projectId, selectedRegion?.region_id, selectedRegion?.page_id]);
+
+    // Workspace: use page-level cache from backend.
+    if (projectId && pageTranslationsById?.[pageId]?.items) {
+      apply(pageTranslationsById[pageId].items?.[regionId] || null);
+      return undefined;
+    }
+
+    // Import viewer: use data embedded into region object.
+    if (!projectId) {
+      apply({
+        draft_translation: selectedRegion.draft_translation,
+        refined_translation: selectedRegion.refined_translation,
+        status_draft: selectedRegion.status_draft,
+        status_refine: selectedRegion.status_refine,
+        error_draft: selectedRegion.error_draft,
+        error_refine: selectedRegion.error_refine,
+      });
+      return undefined;
+    }
+
+    // Fallback (should be rare): do one direct fetch, no polling.
+    (async () => {
+      try {
+        const resp = await fetch(`/api/projects/${effectivePid}/pages/${pageId}/translations/region/${regionId}?lang=ru`);
+        if (!resp.ok) return;
+        const payload = await resp.json();
+        apply(payload);
+      } catch (_) {}
+    })();
+    return undefined;
+  }, [projectId, importProjectId, selectedRegion?.region_id, selectedRegion?.page_id, pageTranslationsById]);
 
   async function handleUpload() {
     if (!uploadFile) return;
@@ -755,18 +831,14 @@ function App() {
       const tStatusResp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`);
       const tStatusPayload = tStatusResp.ok ? await tStatusResp.json() : {};
 
-      const translations = {};
-      for (const region of regions) {
-        try {
-          const tResp = await fetch(
-            `/api/projects/${projectId}/pages/${pageId}/translations/region/${region.region_id}?lang=ru`
-          );
-          if (!tResp.ok) continue;
-          translations[region.region_id] = await tResp.json();
-        } catch (_) {
-          // noop
+      let translations = {};
+      try {
+        const tResp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations?lang=ru`);
+        if (tResp.ok) {
+          const tPayload = await tResp.json();
+          translations = tPayload?.items || {};
         }
-      }
+      } catch (_) {}
       report.translationsByPage[pageId] = {
         status: tStatusPayload,
         regions: translations,
@@ -1310,6 +1382,37 @@ function App() {
                           Страниц: ${importPages.length || 0} | exported at:
                           <span className="mono">${importReport.meta?.exported_at || "-"}</span>
                         </p>
+                        ${(() => {
+                          const missing = countMissingTranslations(importReport);
+                          if (!missing) return null;
+                          return html`
+                            <div className="mt-3 rounded-xl border border-sollers-grayBorder bg-[#F7F6F5] p-3 text-sm">
+                              <p className="text-sollers-gray">Непереведённых блоков: <span className="mono">${missing}</span></p>
+                              <button
+                                className="mt-2 w-full px-4 py-2 rounded-xl border border-sollers-blue text-sollers-blue transition-transform active:scale-[0.98]"
+                                onClick=${async () => {
+                                  try {
+                                    const resp = await fetch(`/api/import/projects/${importProjectId}/translations/enqueue?lang=ru`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify(importReport),
+                                    });
+                                    if (!resp.ok) {
+                                      alert(await resp.text());
+                                      return;
+                                    }
+                                    const payload = await resp.json();
+                                    alert(`Задачи поставлены. Draft: ${payload?.queued?.region_draft || 0}, Refine: ${payload?.queued?.region_refine || 0}`);
+                                  } catch (e) {
+                                    alert(String(e || "enqueue failed"));
+                                  }
+                                }}
+                              >
+                                Перевести непереведённое
+                              </button>
+                            </div>
+                          `;
+                        })()}
                         <div className="mt-4 space-y-3">
                           <div className="flex items-center justify-between gap-2">
                             <button
@@ -1397,12 +1500,7 @@ function App() {
                                             }}
                                             onClick=${() => {
                                               setSelectedRegion(region);
-                                              const best = region.refined_translation || region.draft_translation || "";
-                                              setRegionTranslation({
-                                                statusLabel: region.refined_translation ? "refined" : (region.draft_translation ? "draft" : "pending"),
-                                                text: best,
-                                                error: "",
-                                              });
+                                              setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
                                             }}
                                           />
                                         `;
