@@ -173,7 +173,13 @@ def create_app(
     async def assets(project_id: str, page: str) -> PageAssetsResponse:
         page_id = service.normalize_page_id(page)
         regions_payload = service.load_page_regions(project_id, page_id)
-        region_models = [RegionRecord(**region) for region in regions_payload]
+        # Best-effort: ignore malformed region entries instead of failing the whole response.
+        region_models: list[RegionRecord] = []
+        for region in regions_payload:
+            try:
+                region_models.append(RegionRecord(**(region or {})))
+            except Exception:
+                continue
         return PageAssetsResponse(
             page_id=page_id,
             image_url=f"/api/projects/{project_id}/pages/{page_id}/image",
