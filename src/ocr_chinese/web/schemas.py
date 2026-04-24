@@ -29,10 +29,12 @@ class ProjectStatusResponse(BaseModel):
     status: str
     error: str | None = None
     pages: int = 0
+    pipeline_status: str | None = None
     stage: str | None = None
     progress: dict | None = None
     progress_pages: dict | None = None
     ocr_runtime: dict | None = None
+    translation: dict | None = None
     updated_at: str | None = None
 
 

@@ -435,6 +435,8 @@ function App() {
       ? "cuda"
       : "cpu";
 
+  const webEnableRetryOcr = Boolean(runtimeInfo?.web_enable_retry_ocr);
+
   async function fetchStatus() {
     if (!projectId) return;
     try {
@@ -452,12 +454,20 @@ function App() {
       });
       setConnectionOk(true);
       setStatusPayload(payload);
-      setStatusText(payload.status === "running" ? `Running (${formatStage(payload.stage)})` : payload.status);
+      const tState = String(payload?.translation?.state || "");
+      const stageLabel = formatStage(payload.stage);
+      if (payload.status === "running") {
+        setStatusText(`Running (${stageLabel})`);
+      } else if (payload.status === "done" && tState && tState !== "done") {
+        setStatusText(`Done (${stageLabel})`);
+      } else {
+        setStatusText(payload.status);
+      }
       const pageMap = payload.progress_pages || {};
       Object.entries(pageMap).forEach(([pageId, item]) => {
         etaModel.updateRate("ocr", pageId, Number(item.current_region || 0));
       });
-      if (payload.status === "done" && pages.length === 0) {
+      if (pages.length === 0 && Number(payload.pages || 0) > 0) {
         await loadPages(projectId);
       }
     } catch (_) {
@@ -1465,6 +1475,7 @@ function App() {
                   <button
                     className="px-4 py-2 rounded-xl border border-sollers-orange text-sollers-orange transition-transform active:scale-[0.98]"
                     onClick=${handleRetryRegion}
+                    style=${webEnableRetryOcr ? "" : "display:none"}
                   >
                     Retry OCR (accurate)
                   </button>

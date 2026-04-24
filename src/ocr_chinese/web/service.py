@@ -51,8 +51,69 @@ class ProjectService:
         self._translate_queue: "queue.Queue[dict]" = queue.Queue()
         self._translate_threads: list[threading.Thread] = []
         self._translate_started = False
+        self._translate_metrics_lock = threading.Lock()
+        # project_id -> {"queued": int, "active": int, "done": int, "error": int}
+        self._translate_metrics: dict[str, dict[str, int]] = {}
         self._generate_threads: dict[str, threading.Thread] = {}
         self._generate_lock = threading.Lock()
+
+    def _translate_metrics_snapshot(self, project_id: str) -> dict[str, int]:
+        with self._translate_metrics_lock:
+            cur = self._translate_metrics.get(project_id) or {}
+            return {
+                "queued": int(cur.get("queued", 0) or 0),
+                "active": int(cur.get("active", 0) or 0),
+                "done": int(cur.get("done", 0) or 0),
+                "error": int(cur.get("error", 0) or 0),
+            }
+
+    def _translate_metrics_bump(self, project_id: str, *, queued: int = 0, active: int = 0, done: int = 0, error: int = 0) -> None:
+        with self._translate_metrics_lock:
+            cur = self._translate_metrics.setdefault(project_id, {"queued": 0, "active": 0, "done": 0, "error": 0})
+            cur["queued"] = max(0, int(cur.get("queued", 0) or 0) + int(queued))
+            cur["active"] = max(0, int(cur.get("active", 0) or 0) + int(active))
+            cur["done"] = max(0, int(cur.get("done", 0) or 0) + int(done))
+            cur["error"] = max(0, int(cur.get("error", 0) or 0) + int(error))
+
+    def _refresh_translation_overview(self, project_id: str, *, lang: str = "ru") -> dict:
+        """
+        Lightweight best-effort aggregate used for /status polling.
+        We intentionally avoid deep per-region inspection here.
+        """
+        try:
+            pages = self.list_pages(project_id)
+        except Exception:
+            pages = []
+
+        totals = {
+            "pages_total": int(len(pages)),
+            "pages_with_data": 0,
+            "regions_total": 0,
+            "draft_done": 0,
+            "draft_error": 0,
+            "refine_done": 0,
+            "refine_error": 0,
+        }
+        for page_id in pages[:250]:
+            try:
+                st = self.load_translation_status(project_id, page_id, lang=lang)
+            except Exception:
+                continue
+            totals["pages_with_data"] += 1
+            totals["regions_total"] += int(st.get("regions_total", 0) or 0)
+            totals["draft_done"] += int(st.get("draft_done", 0) or 0)
+            totals["draft_error"] += int(st.get("draft_error", 0) or 0)
+            totals["refine_done"] += int(st.get("refine_done", 0) or 0)
+            totals["refine_error"] += int(st.get("refine_error", 0) or 0)
+
+        q = self._translate_metrics_snapshot(project_id)
+        in_flight = int(q.get("queued", 0) + q.get("active", 0))
+        state = "idle"
+        if totals["regions_total"] > 0 and (in_flight > 0 or totals["refine_done"] + totals["refine_error"] < totals["regions_total"]):
+            state = "running"
+        if totals["regions_total"] > 0 and totals["refine_done"] + totals["refine_error"] >= totals["regions_total"] and in_flight == 0:
+            state = "done"
+        return {"state": state, "queue": q, **totals, "updated_at": _utc_now()}
 
     @staticmethod
     def _probe_paddle_runtime() -> dict:
@@ -256,6 +317,7 @@ class ProjectService:
         if not text or text == "Текст не найден":
             return
         self._ensure_translate_workers()
+        self._translate_metrics_bump(project_id, queued=1)
         self._translate_queue.put(
             {
                 "type": "region_draft",
@@ -276,6 +338,7 @@ class ProjectService:
             for r in (regions or [])
             if str(r.get("text") or "").strip() and str(r.get("text") or "").strip() != "Текст не найден"
         ).strip()
+        self._translate_metrics_bump(project_id, queued=1)
         self._translate_queue.put(
             {
                 "type": "page_context",
@@ -290,6 +353,7 @@ class ProjectService:
             text = str(r.get("text") or "").strip()
             if not region_id or not text or text == "Текст не найден":
                 continue
+            self._translate_metrics_bump(project_id, queued=1)
             self._translate_queue.put(
                 {
                     "type": "region_refine",
@@ -309,6 +373,9 @@ class ProjectService:
         lang = str(job.get("lang") or "ru")
         if not project_id or not page_id or not job_type:
             return
+
+        # Metrics: job is now active (best-effort).
+        self._translate_metrics_bump(project_id, queued=-1, active=1)
 
         if job_type == "page_context":
             page_text = str(job.get("page_text") or "").strip()
@@ -342,6 +409,7 @@ class ProjectService:
                     ),
                     encoding="utf-8",
                 )
+                self._translate_metrics_bump(project_id, active=-1, done=1)
             except Exception as e:
                 # Persist page-level error (best-effort)
                 ctx_path.write_text(
@@ -360,6 +428,7 @@ class ProjectService:
                     ),
                     encoding="utf-8",
                 )
+                self._translate_metrics_bump(project_id, active=-1, error=1)
             return
 
         if job_type == "region_draft":
@@ -390,6 +459,7 @@ class ProjectService:
                     source_text=source_text,
                     patch={"draft_translation": translation, "status_draft": "done"},
                 )
+                self._translate_metrics_bump(project_id, active=-1, done=1)
             except Exception as e:
                 self._upsert_region_translation(
                     project_id,
@@ -399,6 +469,7 @@ class ProjectService:
                     source_text=source_text,
                     patch={"status_draft": "error", "error_draft": str(e)},
                 )
+                self._translate_metrics_bump(project_id, active=-1, error=1)
             return
 
         if job_type == "region_refine":
@@ -407,19 +478,60 @@ class ProjectService:
             if not region_id or not source_text:
                 return
             ctx_path = self._page_context_path(project_id, page_id, lang)
+            attempt = int(job.get("attempt", 0) or 0)
+            max_attempts = int(float(os.getenv("TRANSLATE_CONTEXT_MAX_ATTEMPTS", "240") or "240"))
             if not ctx_path.exists():
                 # Context not ready yet; requeue with a small delay.
+                if attempt >= max_attempts:
+                    self._upsert_region_translation(
+                        project_id,
+                        page_id,
+                        region_id,
+                        lang=lang,
+                        source_text=source_text,
+                        patch={"status_refine": "error", "error_refine": "Page context not ready (timeout)"},
+                    )
+                    self._translate_metrics_bump(project_id, active=-1, error=1)
+                    return
                 time.sleep(0.5)
+                job["attempt"] = attempt + 1
+                self._translate_metrics_bump(project_id, active=-1, queued=1)
                 self._translate_queue.put(job)
                 return
             try:
                 ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
             except Exception:
+                if attempt >= max_attempts:
+                    self._upsert_region_translation(
+                        project_id,
+                        page_id,
+                        region_id,
+                        lang=lang,
+                        source_text=source_text,
+                        patch={"status_refine": "error", "error_refine": "Page context parse failed (timeout)"},
+                    )
+                    self._translate_metrics_bump(project_id, active=-1, error=1)
+                    return
                 time.sleep(0.5)
+                job["attempt"] = attempt + 1
+                self._translate_metrics_bump(project_id, active=-1, queued=1)
                 self._translate_queue.put(job)
                 return
+            ctx_error = str(ctx.get("error") or "").strip()
             context_translation = str(ctx.get("context_translation") or "").strip()
-            if not context_translation:
+            if ctx_error or not context_translation:
+                self._upsert_region_translation(
+                    project_id,
+                    page_id,
+                    region_id,
+                    lang=lang,
+                    source_text=source_text,
+                    patch={
+                        "status_refine": "error",
+                        "error_refine": ctx_error or "Page context translation missing",
+                    },
+                )
+                self._translate_metrics_bump(project_id, active=-1, error=1)
                 return
 
             src_hash = self._hash_text(source_text, context_translation, cfg.model, lang, cfg.prompt_version, "region_refine")
@@ -446,6 +558,7 @@ class ProjectService:
                     source_text=source_text,
                     patch={"refined_translation": translation, "status_refine": "done"},
                 )
+                self._translate_metrics_bump(project_id, active=-1, done=1)
             except Exception as e:
                 self._upsert_region_translation(
                     project_id,
@@ -455,6 +568,7 @@ class ProjectService:
                     source_text=source_text,
                     patch={"status_refine": "error", "error_refine": str(e)},
                 )
+                self._translate_metrics_bump(project_id, active=-1, error=1)
             return
 
     def create_project(self, upload: UploadFile) -> dict:
@@ -645,11 +759,15 @@ class ProjectService:
             )
             # Persist full report to disk. status.json remains a lightweight snapshot for polling.
             self._write_report(project_id, report)
-            status["status"] = "done"
+            status["pipeline_status"] = "done"
+            # Translation continues asynchronously after OCR/mask is done.
+            status["status"] = "running"
+            status["stage"] = "translate"
             status["pages"] = len(report.get("pages", []))
             status["report_path"] = str((output_dir / "report.json").as_posix())
             status["ocr_profile_path"] = str((output_dir / "ocr_profile.json").as_posix())
             status["updated_at"] = _utc_now()
+            status["translation"] = self._refresh_translation_overview(project_id, lang="ru")
             self._write_status(project_id, status)
             return {"status": status, "report": report}
         except Exception as exc:
@@ -704,20 +822,59 @@ class ProjectService:
                 ctx_ready = False
         payload = self._load_regions_translation_payload(project_id, page_id, lang)
         items = payload.get("items") or {}
-        draft_done = sum(1 for it in items.values() if str(it.get("status_draft") or "") == "done")
-        draft_err = sum(1 for it in items.values() if str(it.get("status_draft") or "") == "error")
-        refine_done = sum(1 for it in items.values() if str(it.get("status_refine") or "") == "done")
-        refine_err = sum(1 for it in items.values() if str(it.get("status_refine") or "") == "error")
+
+        # Compute totals from actual OCR regions, not from translation payload (which can be sparse).
+        try:
+            regions = self.load_page_regions(project_id, page_id) or []
+        except Exception:
+            regions = []
+        region_ids = [str(r.get("region_id") or "") for r in regions if str(r.get("region_id") or "").strip()]
+
+        draft_done = draft_err = draft_running = draft_pending = draft_unknown = 0
+        refine_done = refine_err = refine_running = refine_pending = refine_unknown = 0
+
+        for rid in region_ids:
+            entry = items.get(rid) or {}
+            sd = str(entry.get("status_draft") or "").strip().lower()
+            sr = str(entry.get("status_refine") or "").strip().lower()
+
+            if not sd:
+                draft_pending += 1
+            elif sd == "done":
+                draft_done += 1
+            elif sd == "error":
+                draft_err += 1
+            elif sd == "running":
+                draft_running += 1
+            else:
+                draft_unknown += 1
+
+            if not sr:
+                refine_pending += 1
+            elif sr == "done":
+                refine_done += 1
+            elif sr == "error":
+                refine_err += 1
+            elif sr == "running":
+                refine_running += 1
+            else:
+                refine_unknown += 1
         return {
             "page_id": page_id,
             "lang": lang,
             "page_context_ready": bool(ctx_ready),
             "page_context_error": ctx_error,
-            "regions_total": int(len(items)),
+            "regions_total": int(len(region_ids)),
             "draft_done": int(draft_done),
             "draft_error": int(draft_err),
+            "draft_running": int(draft_running),
+            "draft_pending": int(draft_pending),
+            "draft_unknown": int(draft_unknown),
             "refine_done": int(refine_done),
             "refine_error": int(refine_err),
+            "refine_running": int(refine_running),
+            "refine_pending": int(refine_pending),
+            "refine_unknown": int(refine_unknown),
         }
 
     def load_region_translation(self, project_id: str, page_id: str, region_id: str, *, lang: str = "ru") -> dict:
@@ -847,7 +1004,25 @@ class ProjectService:
         status_path = self._project_dir(project_id) / "status.json"
         if not status_path.exists():
             raise HTTPException(status_code=404, detail="Project not found.")
-        return json.loads(status_path.read_text(encoding="utf-8"))
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+
+        # Best-effort: when OCR pipeline finished, keep translation overview fresh
+        # and only mark the project fully done when translation settled.
+        try:
+            if str(status.get("pipeline_status") or "") == "done":
+                overview = self._refresh_translation_overview(project_id, lang="ru")
+                status["translation"] = overview
+                if str(status.get("stage") or "") != "translate":
+                    status["stage"] = "translate"
+                if str(status.get("status") or "") == "running" and str(overview.get("state") or "") == "done":
+                    status["status"] = "done"
+                    status["updated_at"] = _utc_now()
+                # Persist updated snapshot (keeps polling consistent).
+                status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        return status
 
     def list_pages(self, project_id: str) -> list[str]:
         output_dir = self._project_dir(project_id) / "output" / "rendered_pages"

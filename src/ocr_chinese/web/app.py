@@ -59,6 +59,12 @@ def create_app(
             v = "unknown"
         runtime_probe = service._probe_ocr_runtime()
         paddle_probe = service._probe_paddle_runtime()
+        enable_retry_ocr = str(os.getenv("WEB_ENABLE_RETRY_OCR", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         return JSONResponse(
             {
                 "app_version": v,
@@ -66,6 +72,7 @@ def create_app(
                 "bridge_python": os.getenv("OCR_PADDLE_PYTHON"),
                 "default_ocr_device": app.state.default_ocr_device,
                 "allow_fallback": bool(app.state.allow_fallback),
+                "web_enable_retry_ocr": bool(enable_retry_ocr),
                 **runtime_probe,
                 **paddle_probe,
             }
@@ -135,10 +142,12 @@ def create_app(
             status=data["status"],
             error=data.get("error"),
             pages=int(data.get("pages", 0)),
+            pipeline_status=data.get("pipeline_status"),
             stage=data.get("stage"),
             progress=data.get("progress"),
             progress_pages=data.get("progress_pages"),
             ocr_runtime=data.get("ocr_runtime"),
+            translation=data.get("translation"),
             updated_at=data.get("updated_at"),
         )
 
