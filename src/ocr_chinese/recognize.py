@@ -1462,13 +1462,31 @@ def build_region_records_parallel(
     batches = list(_chunked(items, max(1, recognition_config.batch_size)))
     records: list[dict[str, Any]] = []
     workers = max(1, int(recognition_config.max_workers))
+    total_items = len(items)
+    done_count = 0
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_worker_recognizer,
         initargs=(recognition_config,),
     ) as executor:
-        for output_batch in executor.map(_process_region_batch, batches):
-            records.extend(output_batch)
+        futures = [executor.submit(_process_region_batch, b) for b in batches]
+        for fut in as_completed(futures):
+            output_batch = fut.result()
+            batch = list(output_batch or [])
+            records.extend(batch)
+            # Emit incremental callbacks so UI can show live regions even in process-parallel mode.
+            if region_callback:
+                for rec in batch:
+                    try:
+                        region_callback(rec)
+                    except Exception:
+                        pass
+            done_count += len(batch)
+            if progress_callback and (done_count % max(1, int(recognition_config.batch_size)) == 0 or done_count >= total_items):
+                try:
+                    progress_callback({"current_region": int(done_count), "total_regions": int(total_items)})
+                except Exception:
+                    pass
     if ocr_profile is not None:
         ocr_profile.setdefault("mode", "process")
         ocr_profile["workers"] = workers

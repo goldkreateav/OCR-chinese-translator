@@ -125,7 +125,7 @@ class ProjectService:
             cur["done"] = max(0, int(cur.get("done", 0) or 0) + int(done))
             cur["error"] = max(0, int(cur.get("error", 0) or 0) + int(error))
 
-    def _refresh_translation_overview(self, project_id: str, *, lang: str = "ru") -> dict:
+    def _refresh_translation_overview(self, project_id: str, *, lang: str = "ru", max_pages: int = 250) -> dict:
         """
         Lightweight best-effort aggregate used for /status polling.
         We intentionally avoid deep per-region inspection here.
@@ -144,7 +144,7 @@ class ProjectService:
             "refine_done": 0,
             "refine_error": 0,
         }
-        for page_id in pages[:250]:
+        for page_id in pages[: max(0, int(max_pages))]:
             try:
                 st = self.load_translation_status(project_id, page_id, lang=lang)
             except Exception:
@@ -1194,15 +1194,20 @@ class ProjectService:
             raise HTTPException(status_code=404, detail="Project not found.")
         status = json.loads(status_path.read_text(encoding="utf-8"))
 
-        # Best-effort: when OCR pipeline finished, keep translation overview fresh
-        # and only mark the project fully done when translation settled.
+        # Best-effort: keep translation overview fresh and only mark the project
+        # fully done when translation settled.
         try:
-            if str(status.get("pipeline_status") or "") == "done":
-                overview = self._refresh_translation_overview(project_id, lang="ru")
+            stage = str(status.get("stage") or "").lower()
+            pipeline_done = str(status.get("pipeline_status") or "") == "done"
+            # During OCR/mask we only scan a small set of pages to keep /status cheap,
+            # but still expose queue metrics so the UI can show parallel translation activity.
+            overview_pages = 250 if pipeline_done else 8
+            if pipeline_done or stage in {"ocr", "mask"}:
+                overview = self._refresh_translation_overview(project_id, lang="ru", max_pages=overview_pages)
                 status["translation"] = overview
-                if str(status.get("stage") or "") != "translate":
+                if pipeline_done and str(status.get("stage") or "") != "translate":
                     status["stage"] = "translate"
-                if str(status.get("status") or "") == "running" and str(overview.get("state") or "") == "done":
+                if pipeline_done and str(status.get("status") or "") == "running" and str(overview.get("state") or "") == "done":
                     status["status"] = "done"
                     status["updated_at"] = _utc_now()
                 # Persist updated snapshot (keeps polling consistent).
