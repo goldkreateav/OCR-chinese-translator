@@ -1292,6 +1292,8 @@ def build_region_records(
             recognition_config=recognizer.config,
             region_crops_root=region_crops_root,
             ocr_profile=ocr_profile,
+            progress_callback=progress_callback,
+            region_callback=region_callback,
         )
 
     records: list[dict[str, Any]] = []
