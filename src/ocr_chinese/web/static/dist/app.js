@@ -399,7 +399,7 @@ Error generating stack: `+o.message+`
                   <button
                     className="px-4 py-2 rounded-xl border border-sollers-orange text-sollers-orange transition-transform active:scale-[0.98]"
                     onClick=${Mn}
-                    style=${zr?"":"display:none"}
+                    style=${zr?null:{display:"none"}}
                   >
                     Retry OCR (accurate)
                   </button>

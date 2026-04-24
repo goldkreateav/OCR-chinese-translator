@@ -1573,7 +1573,7 @@ function App() {
                   <button
                     className="px-4 py-2 rounded-xl border border-sollers-orange text-sollers-orange transition-transform active:scale-[0.98]"
                     onClick=${handleRetryRegion}
-                    style=${webEnableRetryOcr ? "" : "display:none"}
+                    style=${webEnableRetryOcr ? null : { display: "none" }}
                   >
                     Retry OCR (accurate)
                   </button>
