@@ -516,7 +516,10 @@ function App() {
     if (!pid || !pageId) return;
     const force = Boolean(opts?.force);
     if (!force && assetsByPage[pageId]) return;
-    const resp = await fetch(`/api/projects/${pid}/pages/${pageId}/assets`);
+    const url = force
+      ? `/api/projects/${pid}/pages/${pageId}/assets?t=${Date.now()}`
+      : `/api/projects/${pid}/pages/${pageId}/assets`;
+    const resp = await fetch(url);
     if (!resp.ok) return;
     const payload = await resp.json();
     setAssetsByPage((prev) => ({ ...prev, [pageId]: payload }));
@@ -560,29 +563,26 @@ function App() {
   }, [projectId, pages, translationByPage]);
 
   useEffect(() => {
-    if (!projectId || pages.length === 0) return undefined;
-    const timer = window.setInterval(async () => {
-      const updates = [];
-      for (const pageId of pages) {
-        try {
-          const resp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations?lang=ru`);
-          if (!resp.ok) continue;
-          const payload = await resp.json();
-          updates.push([pageId, payload]);
-        } catch (_) {
-          // noop
-        }
-      }
-      if (updates.length > 0) {
-        setPageTranslationsById((prev) => {
-          const next = { ...prev };
-          for (const [pageId, payload] of updates) next[pageId] = payload;
-          return next;
-        });
-      }
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [projectId, pages]);
+    // Do NOT poll translations for every page (can freeze UI on big PDFs).
+    // Keep a warm cache only for the current page (enough for region modal + export on demand).
+    if (!projectId || !currentPageId) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const resp = await fetch(`/api/projects/${projectId}/pages/${currentPageId}/translations?lang=ru`);
+        if (!resp.ok) return;
+        const payload = await resp.json();
+        if (cancelled) return;
+        setPageTranslationsById((prev) => ({ ...prev, [currentPageId]: payload }));
+      } catch (_) {}
+    };
+    tick();
+    const timer = window.setInterval(tick, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [projectId, currentPageId]);
 
   useEffect(() => {
     if (!projectId || !currentPageId) return;
