@@ -1139,6 +1139,8 @@ function App() {
     }, [fitScale]);
 
     const canRenderStable = Number.isFinite(Number(stableFitScale)) && Number(stableFitScale) > 0;
+    const hasEverRenderedRef = useRef(false);
+    if (canRenderStable) hasEverRenderedRef.current = true;
 
     const transformStyle = useMemo(() => {
       const tx = Number.isFinite(view.panX) ? view.panX : 0;
@@ -1415,7 +1417,7 @@ function App() {
             className="viewer-transformLayer"
             style=${{
               ...(layerSizeStyle || {}),
-              ...(canRenderStable ? null : { visibility: "hidden" }),
+              ...(!hasEverRenderedRef.current && !canRenderStable ? { visibility: "hidden" } : null),
               ...transformStyle,
             }}
           >
@@ -1691,7 +1693,7 @@ function App() {
                                 <div className="flex items-center justify-between gap-2 text-sm">
                                   <span className="mono">${row.pageId}</span>
                                   <span className="text-sollers-gray">
-                                    Page ETA: ${formatDuration(row.pageEta)} | OCR: ${formatDuration(row.ocrEta)} | Translate: ${formatDuration(row.translateEta)}
+                                    Page ETA: ${formatDuration(row.pageEta)} | OCR: ${formatDuration(row.ocrEta)}
                                   </span>
                                 </div>
                                 <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
