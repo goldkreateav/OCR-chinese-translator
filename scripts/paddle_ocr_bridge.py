@@ -162,6 +162,7 @@ def main() -> None:
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            enable_mkldnn=False,
         ),
         dict(
             lang=args.lang,
@@ -170,16 +171,21 @@ def main() -> None:
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            enable_mkldnn=False,
         ),
         dict(
             lang=args.lang,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            enable_mkldnn=False,
         ),
         dict(use_angle_cls=False, lang=args.lang, det=False, rec=True, show_log=False),
+        dict(use_angle_cls=False, lang=args.lang, show_log=False, enable_mkldnn=False),
         dict(use_angle_cls=False, lang=args.lang, show_log=False),
+        dict(use_angle_cls=False, lang=args.lang, enable_mkldnn=False),
         dict(use_angle_cls=False, lang=args.lang),
+        dict(lang=args.lang, enable_mkldnn=False),
         dict(lang=args.lang),
     ]
     last_exc = None

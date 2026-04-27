@@ -215,6 +215,17 @@ class RegionTextRecognizer:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
+                enable_mkldnn=False,
+            ),
+            dict(
+                lang=config.lang,
+                det=False,
+                rec=True,
+                show_log=False,
+                use_angle_cls=self._use_angle_cls,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
             ),
             dict(
                 lang=config.lang,
@@ -223,6 +234,22 @@ class RegionTextRecognizer:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
+                enable_mkldnn=False,
+            ),
+            dict(
+                lang=config.lang,
+                show_log=False,
+                use_angle_cls=self._use_angle_cls,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            ),
+            dict(
+                lang=config.lang,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                enable_mkldnn=False,
             ),
             dict(
                 lang=config.lang,
@@ -237,7 +264,9 @@ class RegionTextRecognizer:
                 rec=True,
                 show_log=False,
             ),
+            dict(use_angle_cls=self._use_angle_cls, lang=config.lang, enable_mkldnn=False),
             dict(use_angle_cls=self._use_angle_cls, lang=config.lang),
+            dict(lang=config.lang, enable_mkldnn=False),
             dict(lang=config.lang),
         ]
         last_exc: Exception | None = None

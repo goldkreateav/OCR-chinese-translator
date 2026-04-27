@@ -202,6 +202,7 @@ class OrientedTextDetector:
                     use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
+                    enable_mkldnn=False,
                 ),
                 dict(
                     lang=config.paddle_lang,
@@ -210,12 +211,14 @@ class OrientedTextDetector:
                     use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
+                    enable_mkldnn=False,
                 ),
                 dict(
                     lang=config.paddle_lang,
                     use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
+                    enable_mkldnn=False,
                 ),
                 # Compatibility fallbacks for older APIs.
                 dict(
@@ -225,7 +228,9 @@ class OrientedTextDetector:
                     rec=False,
                     show_log=False,
                 ),
+                dict(use_angle_cls=False, lang=config.paddle_lang, show_log=False, enable_mkldnn=False),
                 dict(use_angle_cls=False, lang=config.paddle_lang, show_log=False),
+                dict(lang=config.paddle_lang, enable_mkldnn=False),
                 dict(lang=config.paddle_lang),
             ]
             last_exc: Exception | None = None

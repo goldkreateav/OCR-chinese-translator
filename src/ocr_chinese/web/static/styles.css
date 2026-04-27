@@ -17,14 +17,46 @@ body,
 .viewer-surface {
   position: relative;
   width: 100%;
-  overflow: auto;
+  height: min(72vh, 820px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid #CACCCE;
   border-radius: 1rem;
+  background: #fff;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  contain: layout paint;
+}
+
+.viewer-surface.is-dragging {
+  cursor: grabbing;
+}
+
+.viewer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.viewer-transformLayer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
 }
 
 .viewer-page {
   display: block;
-  width: 100%;
+  position: relative;
+  z-index: 0;
+  pointer-events: none;
+  backface-visibility: hidden;
 }
 
 .viewer-mask {
@@ -32,8 +64,10 @@ body,
   left: 0;
   top: 0;
   display: block;
+  z-index: 1;
   opacity: 0.36;
   pointer-events: none;
+  backface-visibility: hidden;
 }
 
 .viewer-overlay {
@@ -41,10 +75,14 @@ body,
   left: 0;
   top: 0;
   display: block;
+  z-index: 2;
+  pointer-events: none;
+  backface-visibility: hidden;
 }
 
 .region-polygon {
   cursor: pointer;
+  pointer-events: all;
   stroke-width: 1;
   transition: fill 140ms ease, stroke-width 140ms ease;
 }

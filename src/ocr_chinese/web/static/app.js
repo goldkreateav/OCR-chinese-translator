@@ -81,14 +81,14 @@ function pointsToAttrNormalize(points, sx, sy, ox, oy) {
 
 function readImageGeom(img) {
   if (!img) return null;
-  const rect = img.getBoundingClientRect();
-  const parentRect = (img.parentElement || img).getBoundingClientRect();
+  // Use layout sizes (clientWidth/Height) so transforms (scale/rotate) don't affect measurements.
+  const parent = img.parentElement || img;
   const w = Number(img.naturalWidth || 0);
   const h = Number(img.naturalHeight || 0);
-  const cw = Number(rect.width || 0);
-  const ch = Number(rect.height || 0);
-  const pw = Number(parentRect.width || 0);
-  const ph = Number(parentRect.height || 0);
+  const cw = Number(img.clientWidth || 0);
+  const ch = Number(img.clientHeight || 0);
+  const pw = Number(parent.clientWidth || 0);
+  const ph = Number(parent.clientHeight || 0);
   if (!(w > 0 && h > 0 && cw > 0 && ch > 0)) return null;
   return { w, h, cw, ch, pw, ph };
 }
@@ -279,9 +279,11 @@ function App() {
   const [translationByPage, setTranslationByPage] = useState({});
   const [pageTranslationsById, setPageTranslationsById] = useState({}); // pageId -> {items: {region_id -> entry}}
   const [assetsByPage, setAssetsByPage] = useState({});
+  const [assetsRevByPage, setAssetsRevByPage] = useState({}); // pageId -> number; bumps only when image/mask url changes
   const [maskOkByPage, setMaskOkByPage] = useState({});
   const [maskNonce, setMaskNonce] = useState(0);
   const [pageGeomById, setPageGeomById] = useState({});
+  const [viewByPage, setViewByPage] = useState({}); // pageId -> {rotSteps, scale, panX, panY}
   const [selectedRegion, setSelectedRegion] = useState(null);
   const [regionTranslation, setRegionTranslation] = useState({
     statusLabel: "pending",
@@ -297,6 +299,8 @@ function App() {
   const [importPageIndex, setImportPageIndex] = useState(0);
   const [importAssetsByPage, setImportAssetsByPage] = useState({});
   const [importPageGeomById, setImportPageGeomById] = useState({});
+  const [importViewByPage, setImportViewByPage] = useState({}); // pageId -> {rotSteps, scale, panX, panY}
+  const [importAssetsRevByPage, setImportAssetsRevByPage] = useState({}); // pageId -> number (for stable cache buster)
   const [uploadFile, setUploadFile] = useState(null);
   const [dpi, setDpi] = useState(400);
   const [ocrMode, setOcrMode] = useState("eco");
@@ -305,11 +309,65 @@ function App() {
   const etaModel = useEtaModel();
   const routeRef = useRef(route);
   routeRef.current = route;
+  const assetsEnsureInFlightRef = useRef({}); // key -> Promise; prevents concurrent ensureAssets storms
   const etaJumpRef = useRef({}); // pageId -> {lastAt, lastEta}
   const pageSetRef = useRef({ key: "" });
   const etaDisplayRef = useRef({}); // key -> {eta, at}
   const workspaceImageRef = useRef(null);
   const importImageRef = useRef(null);
+  const viewerDragRef = useRef({
+    active: false,
+    pageId: null,
+    isImport: false,
+    pointerId: null,
+    startClientX: 0,
+    startClientY: 0,
+    startPanX: 0,
+    startPanY: 0,
+    moved: false,
+    justDraggedAt: 0,
+    thresholdPx: 4,
+  });
+
+  const VIEW_MIN_SCALE = 0.25;
+  const VIEW_MAX_SCALE = 6.0;
+
+  function clampScale(v) {
+    if (!Number.isFinite(v)) return 1;
+    return Math.max(VIEW_MIN_SCALE, Math.min(VIEW_MAX_SCALE, v));
+  }
+
+  function getViewState(map, pageId) {
+    const base = map?.[pageId] || null;
+    return {
+      rotSteps: Number.isFinite(base?.rotSteps) ? ((base.rotSteps % 4) + 4) % 4 : 0,
+      scale: clampScale(Number(base?.scale || 1)),
+      panX: Number.isFinite(base?.panX) ? base.panX : 0,
+      panY: Number.isFinite(base?.panY) ? base.panY : 0,
+    };
+  }
+
+  function patchViewState(isImport, pageId, patch) {
+    if (!pageId) return;
+    const setFn = isImport ? setImportViewByPage : setViewByPage;
+    setFn((prev) => {
+      const cur = getViewState(prev, pageId);
+      const next = typeof patch === "function" ? patch(cur) : { ...cur, ...(patch || {}) };
+      const normalized = {
+        rotSteps: Number.isFinite(next?.rotSteps) ? ((next.rotSteps % 4) + 4) % 4 : cur.rotSteps,
+        scale: clampScale(Number(next?.scale || cur.scale)),
+        panX: Number.isFinite(next?.panX) ? next.panX : cur.panX,
+        panY: Number.isFinite(next?.panY) ? next.panY : cur.panY,
+      };
+      const same =
+        normalized.rotSteps === cur.rotSteps &&
+        normalized.scale === cur.scale &&
+        normalized.panX === cur.panX &&
+        normalized.panY === cur.panY;
+      if (same) return prev;
+      return { ...prev, [pageId]: normalized };
+    });
+  }
 
   useEffect(() => {
     dbg("H_build", "static/app.js:App", "app mounted", { build: APP_BUILD, path: window.location.pathname });
@@ -516,13 +574,40 @@ function App() {
     if (!pid || !pageId) return;
     const force = Boolean(opts?.force);
     if (!force && assetsByPage[pageId]) return;
+    const inflightKey = `${pid}:${pageId}:${force ? 1 : 0}`;
+    const inflight = assetsEnsureInFlightRef.current[inflightKey];
+    if (inflight) {
+      return inflight;
+    }
     const url = force
-      ? `/api/projects/${pid}/pages/${pageId}/assets?t=${Date.now()}`
+      ? `/api/projects/${pid}/pages/${pageId}/assets?force=1`
       : `/api/projects/${pid}/pages/${pageId}/assets`;
-    const resp = await fetch(url);
-    if (!resp.ok) return;
-    const payload = await resp.json();
-    setAssetsByPage((prev) => ({ ...prev, [pageId]: payload }));
+    const p = (async () => {
+      const resp = await fetch(url);
+      if (!resp.ok) return;
+      const payload = await resp.json();
+      setAssetsByPage((prev) => {
+        const cur = prev?.[pageId] || null;
+        const next = { ...prev, [pageId]: payload };
+        const curImg = String(cur?.image_url || "");
+        const curMask = String(cur?.mask_url || "");
+        const nextImg = String(payload?.image_url || "");
+        const nextMask = String(payload?.mask_url || "");
+        if (cur && (curImg !== nextImg || curMask !== nextMask)) {
+          setAssetsRevByPage((rprev) => ({ ...rprev, [pageId]: Number(rprev?.[pageId] || 0) + 1 }));
+        }
+        if (!cur && (nextImg || nextMask)) {
+          setAssetsRevByPage((rprev) => ({ ...rprev, [pageId]: Number(rprev?.[pageId] || 0) + 1 }));
+        }
+        return next;
+      });
+    })().finally(() => {
+      try {
+        delete assetsEnsureInFlightRef.current[inflightKey];
+      } catch (_) {}
+    });
+    assetsEnsureInFlightRef.current[inflightKey] = p;
+    return p;
   }
 
   useEffect(() => {
@@ -912,6 +997,11 @@ function App() {
     setImportProjectId(pid);
     setImportPages(pages);
     setImportPageIndex(0);
+    setImportAssetsRevByPage(() => {
+      const rev = {};
+      for (const pageId of pages || []) rev[String(pageId)] = 1;
+      return rev;
+    });
     // Build offline assets from report for each page (regions + translations).
     const map = {};
     for (const pageId of pages) {
@@ -983,6 +1073,436 @@ function App() {
     });
   }, [derivedPageIds, progressPages, translationByPage, avgRegionsPerPage]);
 
+  function PageViewer({
+    isImport,
+    pageId,
+    title,
+    imageUrl,
+    imageAlt,
+    imageRef,
+    onImageLoad,
+    maskUrl,
+    maskOk,
+    maskStyle,
+    onMaskLoad,
+    onMaskError,
+    regions,
+    geomById,
+    setGeomById,
+    onRegionClick,
+  }) {
+    const geom = (pageId && geomById?.[pageId]) || {};
+    const view = getViewState(isImport ? importViewByPage : viewByPage, pageId);
+    const rotDeg = view.rotSteps * 90;
+
+    const surfaceRef = useRef(null);
+    const [surfaceSize, setSurfaceSize] = useState({ w: 0, h: 0 });
+
+    useEffect(() => {
+      const el = surfaceRef.current;
+      if (!el) return undefined;
+      const sync = () => {
+        const r = el.getBoundingClientRect();
+        const w = Math.max(0, Math.round(Number(r.width || 0)));
+        const h = Math.max(0, Math.round(Number(r.height || 0)));
+        setSurfaceSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+      };
+      sync();
+      let ro = null;
+      if (typeof window.ResizeObserver === "function") {
+        ro = new window.ResizeObserver(() => sync());
+        ro.observe(el);
+      }
+      window.addEventListener("resize", sync);
+      return () => {
+        window.removeEventListener("resize", sync);
+        if (ro) ro.disconnect();
+      };
+    }, []);
+
+    const naturalW = Number(geom?.w || 0);
+    const naturalH = Number(geom?.h || 0);
+    const rotStepsNorm = Number.isFinite(view.rotSteps) ? ((view.rotSteps % 4) + 4) % 4 : 0;
+    const isRotOdd = rotStepsNorm % 2 === 1;
+    const fitW = isRotOdd ? naturalH : naturalW;
+    const fitH = isRotOdd ? naturalW : naturalH;
+
+    const lastFitScaleRef = useRef(null);
+    const fitScaleRaw = useMemo(() => {
+      if (!(fitW > 0 && fitH > 0)) return null;
+      const sw = Number(surfaceSize.w || 0);
+      const sh = Number(surfaceSize.h || 0);
+      if (!(sw > 0 && sh > 0)) return null;
+      const v = Math.min(sw / fitW, sh / fitH);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    }, [surfaceSize.w, surfaceSize.h, fitW, fitH]);
+
+    const fitScale = useMemo(() => {
+      const v = Number(fitScaleRaw);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    }, [fitScaleRaw]);
+
+    // Avoid one-frame "flash" when fitScale briefly becomes invalid during layout/repaint.
+    const stableFitScale = useMemo(() => {
+      const v = Number(fitScale);
+      if (Number.isFinite(v) && v > 0) return v;
+      const prev = Number(lastFitScaleRef.current);
+      return Number.isFinite(prev) && prev > 0 ? prev : null;
+    }, [fitScale]);
+
+    useEffect(() => {
+      const v = Number(fitScale);
+      if (Number.isFinite(v) && v > 0) lastFitScaleRef.current = v;
+    }, [fitScale]);
+
+    const canRenderStable = Number.isFinite(Number(stableFitScale)) && Number(stableFitScale) > 0;
+
+    const transformStyle = useMemo(() => {
+      const tx = Number.isFinite(view.panX) ? view.panX : 0;
+      const ty = Number.isFinite(view.panY) ? view.panY : 0;
+      const baseFit = canRenderStable ? Number(stableFitScale) : 1;
+      const sc = clampScale(view.scale) * baseFit;
+      return {
+        // translate3d helps avoid intermittent compositor repaint issues on large images.
+        transform: `translate3d(${tx}px, ${ty}px, 0) scale(${sc}) rotate(${rotDeg}deg)`,
+        transformOrigin: "0 0",
+      };
+    }, [view.panX, view.panY, view.scale, rotDeg, stableFitScale, canRenderStable]);
+
+    const layerSizeStyle = useMemo(() => {
+      return naturalW > 0 && naturalH > 0 ? { width: `${naturalW}px`, height: `${naturalH}px` } : null;
+    }, [naturalW, naturalH]);
+
+    const viewBox = useMemo(() => {
+      return geom?.w && geom?.h ? `0 0 ${geom.w} ${geom.h}` : inferViewBox(regions || []);
+    }, [geom?.w, geom?.h, regions]);
+
+    const rev = Number((isImport ? importAssetsRevByPage : assetsRevByPage)?.[pageId] || 0);
+    const stableImageSrc = imageUrl ? `${imageUrl}${String(imageUrl).includes("?") ? "&" : "?"}v=${rev}` : "";
+    const stableMaskSrc = maskUrl ? `${maskUrl}${String(maskUrl).includes("?") ? "&" : "?"}v=${rev}` : "";
+
+    const startDrag = (e) => {
+      if (!pageId) return;
+      if (!e.isPrimary) return;
+      if (e.button !== 0) return;
+      // Allow clicking interactive overlay elements (regions) without starting a pan drag.
+      const t = e.target;
+      if (t && typeof t.closest === "function") {
+        if (t.closest(".region-polygon")) return;
+        if (t.closest("button,a,input,textarea,select")) return;
+      }
+      try {
+        e.currentTarget?.setPointerCapture?.(e.pointerId);
+      } catch (_) {}
+      viewerDragRef.current = {
+        active: true,
+        pageId,
+        isImport: Boolean(isImport),
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startPanX: view.panX,
+        startPanY: view.panY,
+        moved: false,
+        justDraggedAt: Number(viewerDragRef.current?.justDraggedAt || 0),
+        thresholdPx: viewerDragRef.current?.thresholdPx || 4,
+      };
+    };
+
+    const moveDrag = (e) => {
+      const st = viewerDragRef.current;
+      if (
+        !st?.active ||
+        st.pageId !== pageId ||
+        Boolean(st.isImport) !== Boolean(isImport) ||
+        st.pointerId !== e.pointerId
+      )
+        return;
+      const dx = e.clientX - st.startClientX;
+      const dy = e.clientY - st.startClientY;
+      const dist = Math.hypot(dx, dy);
+      if (dist > Number(st.thresholdPx || 4)) st.moved = true;
+      patchViewState(isImport, pageId, (cur) => ({ ...cur, panX: st.startPanX + dx, panY: st.startPanY + dy }));
+      e.preventDefault();
+    };
+
+    const endDrag = (e) => {
+      const st = viewerDragRef.current;
+      if (
+        !st?.active ||
+        st.pageId !== pageId ||
+        Boolean(st.isImport) !== Boolean(isImport) ||
+        (e && st.pointerId != null && e.pointerId != null && st.pointerId !== e.pointerId)
+      )
+        return;
+      const wasMoved = Boolean(st.moved);
+      viewerDragRef.current = {
+        ...st,
+        active: false,
+        pointerId: null,
+        moved: false,
+        justDraggedAt: wasMoved ? Date.now() : Number(st.justDraggedAt || 0),
+      };
+      try {
+        surfaceRef.current?.releasePointerCapture?.(st.pointerId);
+      } catch (_) {}
+      e?.preventDefault?.();
+    };
+
+    useEffect(() => {
+      const onBlur = () => {
+        const st = viewerDragRef.current;
+        if (!st?.active) return;
+        if (st.pageId !== pageId || Boolean(st.isImport) !== Boolean(isImport)) return;
+        try {
+          surfaceRef.current?.releasePointerCapture?.(st.pointerId);
+        } catch (_) {}
+        viewerDragRef.current = { ...st, active: false, pointerId: null, moved: false };
+      };
+      const onUp = (e) => {
+        const st = viewerDragRef.current;
+        if (!st?.active) return;
+        if (st.pageId !== pageId || Boolean(st.isImport) !== Boolean(isImport)) return;
+        if (st.pointerId != null && e?.pointerId != null && st.pointerId !== e.pointerId) return;
+        viewerDragRef.current = { ...st, active: false, pointerId: null, moved: false };
+        try {
+          surfaceRef.current?.releasePointerCapture?.(st.pointerId);
+        } catch (_) {}
+      };
+      window.addEventListener("blur", onBlur);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+      return () => {
+        window.removeEventListener("blur", onBlur);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+    }, [pageId, isImport]);
+
+    const bumpScale = (factor, clientPoint = null) => {
+      if (!pageId) return;
+      const el = surfaceRef.current;
+      const rect = el?.getBoundingClientRect?.() || null;
+      const cx = rect
+        ? (clientPoint && Number.isFinite(clientPoint.x) ? clientPoint.x - rect.left : rect.width / 2)
+        : 0;
+      const cy = rect
+        ? (clientPoint && Number.isFinite(clientPoint.y) ? clientPoint.y - rect.top : rect.height / 2)
+        : 0;
+
+      patchViewState(isImport, pageId, (cur) => {
+        const prevScale = clampScale(cur.scale);
+        const nextScale = clampScale(prevScale * factor);
+        try {
+          console.log("[viewer]", {
+            action: "zoom",
+            pageId,
+            isImport: !!isImport,
+            factor,
+            cursor: { x: cx, y: cy },
+            prev: { scale: prevScale, panX: cur.panX, panY: cur.panY, rotSteps: cur.rotSteps },
+            next: { scale: nextScale },
+          });
+        } catch (_) {}
+        if (nextScale === prevScale) return cur;
+        const k = nextScale / prevScale;
+        const nextPanX = cx - (cx - cur.panX) * k;
+        const nextPanY = cy - (cy - cur.panY) * k;
+        return { ...cur, scale: nextScale, panX: nextPanX, panY: nextPanY };
+      });
+    };
+
+    const onWheel = (e) => {
+      if (!pageId) return;
+      const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+      try {
+        console.log("[viewer]", { action: "wheelZoom", pageId, isImport: !!isImport, deltaY: e.deltaY, factor });
+      } catch (_) {}
+      bumpScale(factor, { x: e.clientX, y: e.clientY });
+      e.preventDefault(); // prevent page scroll while zooming inside viewer
+    };
+
+    const resetView = () => {
+      try {
+        console.log("[viewer]", { action: "reset", pageId, isImport: !!isImport });
+      } catch (_) {}
+      return patchViewState(isImport, pageId, { rotSteps: 0, scale: 1, panX: 0, panY: 0 });
+    };
+
+    const rotateKeepingCenter = (dir) => {
+      if (!pageId) return;
+      try {
+        console.log("[viewer]", { action: "rotate", pageId, isImport: !!isImport, dir });
+      } catch (_) {}
+      const el = surfaceRef.current;
+      const rect = el?.getBoundingClientRect?.() || null;
+      const cx = rect ? rect.width / 2 : 0;
+      const cy = rect ? rect.height / 2 : 0;
+      const scaleTotal = clampScale(view.scale) * (Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1);
+      if (!(scaleTotal > 0)) {
+        patchViewState(isImport, pageId, (cur) => ({ ...cur, rotSteps: (cur.rotSteps + dir + 4) % 4 }));
+        return;
+      }
+
+      patchViewState(isImport, pageId, (cur) => {
+        const rot0 = ((Number(cur.rotSteps) % 4) + 4) % 4;
+        const rot1 = (rot0 + dir + 4) % 4;
+        const panX0 = Number.isFinite(cur.panX) ? cur.panX : 0;
+        const panY0 = Number.isFinite(cur.panY) ? cur.panY : 0;
+
+        const dx = (cx - panX0) / scaleTotal;
+        const dy = (cy - panY0) / scaleTotal;
+
+        // Convert screen-center back to content coords by applying inverse rotation (multiples of 90°).
+        let px = dx;
+        let py = dy;
+        if (rot0 === 1) {
+          px = dy;
+          py = -dx;
+        } else if (rot0 === 2) {
+          px = -dx;
+          py = -dy;
+        } else if (rot0 === 3) {
+          px = -dy;
+          py = dx;
+        }
+
+        // Apply new rotation to that same content point, then choose pan so it stays at screen center.
+        let rx = px;
+        let ry = py;
+        if (rot1 === 1) {
+          rx = -py;
+          ry = px;
+        } else if (rot1 === 2) {
+          rx = -px;
+          ry = -py;
+        } else if (rot1 === 3) {
+          rx = py;
+          ry = -px;
+        }
+
+        const nextPanX = cx - rx * scaleTotal;
+        const nextPanY = cy - ry * scaleTotal;
+
+        return { ...cur, rotSteps: rot1, panX: nextPanX, panY: nextPanY };
+      });
+    };
+
+    const rotateLeft = () => rotateKeepingCenter(-1);
+    const rotateRight = () => rotateKeepingCenter(1);
+
+    const isDragging = Boolean(viewerDragRef.current?.active && viewerDragRef.current?.pageId === pageId);
+
+    return html`
+      <div>
+        <div className="viewer-toolbar">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-sollers-gray">${title || "Viewer"}</span>
+            <span className="mono text-xs text-sollers-gray">${Math.round(clampScale(Number(view.scale || 1)) * 100)}% | ${rotDeg}°</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${() => bumpScale(1 / 1.15)}>
+              −
+            </button>
+            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${() => bumpScale(1.15)}>
+              +
+            </button>
+            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${rotateLeft}>
+              ⟲ 90°
+            </button>
+            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${rotateRight}>
+              ⟳ 90°
+            </button>
+            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${resetView}>
+              Сброс
+            </button>
+          </div>
+        </div>
+
+        <div
+          className=${`viewer-surface ${isDragging ? "is-dragging" : ""}`}
+          ref=${surfaceRef}
+          onPointerDown=${startDrag}
+          onPointerMove=${moveDrag}
+          onPointerUp=${endDrag}
+          onPointerCancel=${endDrag}
+          onWheel=${onWheel}
+        >
+          <div
+            className="viewer-transformLayer"
+            style=${{
+              ...(layerSizeStyle || {}),
+              ...(canRenderStable ? null : { visibility: "hidden" }),
+              ...transformStyle,
+            }}
+          >
+            <img
+              src=${stableImageSrc}
+              alt=${imageAlt || "Rendered page"}
+              className="viewer-page"
+              style=${layerSizeStyle}
+              ref=${imageRef}
+              onLoad=${(e) => {
+                try {
+                  onImageLoad?.(e);
+                } finally {
+                  try {
+                    const img = e.currentTarget;
+                    const geom = readImageGeom(img);
+                    if (pageId && geom) setGeomById((prev) => upsertGeom(prev, pageId, geom));
+                  } catch (_) {}
+                }
+              }}
+              draggable="false"
+            />
+
+            ${maskUrl && maskOk !== false
+              ? html`
+                  <img
+                    src=${stableMaskSrc}
+                    alt="Mask overlay"
+                    className="viewer-mask"
+                    style=${layerSizeStyle}
+                    onLoad=${onMaskLoad}
+                    onError=${onMaskError}
+                    draggable="false"
+                  />
+                `
+              : null}
+
+            <svg
+              className="viewer-overlay"
+              style=${layerSizeStyle}
+              viewBox=${viewBox}
+              preserveAspectRatio="none"
+            >
+              ${(regions || []).map((region) => {
+                const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
+                const style = getPolygonStyle(conf);
+                return html`
+                  <polygon
+                    key=${region.region_id}
+                    points=${pointsToAttr(region.polygon)}
+                    className="region-polygon"
+                    fill=${style.fill}
+                    stroke=${style.stroke}
+                    onClick=${() => {
+                      const st = viewerDragRef.current;
+                      if (st?.active) return;
+                      const justDraggedAt = Number(st?.justDraggedAt || 0);
+                      if (justDraggedAt > 0 && Date.now() - justDraggedAt < 240) return;
+                      onRegionClick?.(region);
+                    }}
+                  />
+                `;
+              })}
+            </svg>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   const isBusy = generateInFlight || statusState === "running";
 
   return html`
@@ -1020,10 +1540,10 @@ function App() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-4 md:px-8 py-6 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
+      <main className="max-w-[1400px] mx-auto px-4 md:px-8 py-6 grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-6">
         ${route === "workspace"
           ? html`
-              <section className="space-y-5">
+              <section className="space-y-5 min-w-0">
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
                   <h2 className="text-lg font-semibold">Проект</h2>
                   <div className="mt-4 space-y-4">
@@ -1119,7 +1639,7 @@ function App() {
               </section>
             `
           : html`
-              <section className="space-y-5">
+              <section className="space-y-5 min-w-0">
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
                   <h2 className="text-lg font-semibold">Импорт отчёта (view-only)</h2>
                   <p className="text-sm text-sollers-gray mt-2">
@@ -1157,10 +1677,10 @@ function App() {
               </section>
             `}
 
-        <section className="space-y-5">
+        <section className="space-y-5 min-w-0">
           ${route === "workspace"
             ? html`
-                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
+                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-lg font-semibold">Прогресс по страницам</h2>
                     <span className="text-sm text-sollers-gray">ETA приблизительная</span>
@@ -1216,7 +1736,7 @@ function App() {
                       `}
                 </article>
 
-                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
+                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-lg font-semibold">Viewer</h2>
                     <div className="flex items-center gap-2">
@@ -1240,141 +1760,51 @@ function App() {
 
                   ${currentAssets
                     ? html`
-                        <div className="viewer-surface">
-                          <img
-                            src=${`${currentAssets.image_url}?t=${Date.now()}`}
-                            alt="Rendered page"
-                            className="viewer-page"
-                            ref=${workspaceImageRef}
-                            onLoad=${(e) => {
-                              try {
-                                const img = e.currentTarget;
-                                workspaceImageRef.current = img;
-                                const geom = readImageGeom(img);
-                                // #region agent log
-                                try {
-                                  const maskEl = (img.parentElement || document).querySelector("img.viewer-mask");
-                                  const svgEl = (img.parentElement || document).querySelector("svg.viewer-overlay");
-                                  const maskRect = maskEl?.getBoundingClientRect?.() || null;
-                                  const svgRect = svgEl?.getBoundingClientRect?.() || null;
-                                  const cs = window.getComputedStyle(img);
-                                  dbg("H_ws_layers_1", "static/app.js:viewerImage:onLoad", "workspace layer rects", {
-                                    pageId: currentPageId,
-                                    build: APP_BUILD,
-                                    imgNaturalW: Number(img.naturalWidth || 0),
-                                    imgNaturalH: Number(img.naturalHeight || 0),
-                                    imgRectW: geom?.cw || 0,
-                                    imgRectH: geom?.ch || 0,
-                                    parentW: geom?.pw || 0,
-                                    parentH: geom?.ph || 0,
-                                    objectFit: cs.objectFit,
-                                    objectPosition: cs.objectPosition,
-                                    maskRect,
-                                    svgRect,
-                                  });
-                                } catch (_) {}
-                                // #endregion
-                                if (!geom || !currentPageId) return;
-                                setPageGeomById((prev) => upsertGeom(prev, currentPageId, geom));
-                                dbg("H_overlay_1", "static/app.js:viewerImage:onLoad", "image loaded", {
-                                  pageId: currentPageId,
-                                  naturalWidth: geom.w,
-                                  naturalHeight: geom.h,
-                                  rectW: geom.cw,
-                                  rectH: geom.ch,
-                                  parentW: geom.pw,
-                                  parentH: geom.ph,
-                                  regionsCount: (currentAssets?.regions || []).length,
-                                });
-                              } catch (_) {}
-                            }}
-                          />
-                          ${maskOkByPage[currentPageId] !== false
-                            ? html`
-                                <img
-                                  src=${`${currentAssets.mask_url}?t=${maskNonce}`}
-                                  alt="Mask overlay"
-                                  className="viewer-mask"
-                                  style=${(() => {
-                                    const g = pageGeomById[currentPageId] || {};
-                                    return g.cw && g.ch ? { width: `${g.cw}px`, height: `${g.ch}px` } : null;
-                                  })()}
-                                  onLoad=${() => {
-                                    setMaskOkByPage((prev) => ({ ...prev, [currentPageId]: true }));
-                                    // #region agent log
-                                    try {
-                                      const m = document.querySelector("img.viewer-mask");
-                                      const r = m?.getBoundingClientRect?.() || null;
-                                      dbg("H_ws_layers_2", "static/app.js:mask:onLoad", "mask rect", {
-                                        pageId: currentPageId,
-                                        build: APP_BUILD,
-                                        rect: r,
-                                      });
-                                    } catch (_) {}
-                                    // #endregion
-                                    dbg("H_overlay_2", "static/app.js:mask:onLoad", "mask loaded", { pageId: currentPageId });
-                                  }}
-                                  onError=${() => {
-                                    setMaskOkByPage((prev) => ({ ...prev, [currentPageId]: false }));
-                                    dbg("H5", "static/app.js:mask", "Mask image load failed", {
-                                      pageId: currentPageId,
-                                      maskUrl: currentAssets.mask_url,
-                                      stage,
-                                    });
-                                  }}
-                                />
-                              `
-                            : null}
-                          <svg
-                            className="viewer-overlay"
-                            style=${(() => {
-                              const g = pageGeomById[currentPageId] || {};
-                              return g.cw && g.ch ? { width: `${g.cw}px`, height: `${g.ch}px` } : null;
-                            })()}
-                            viewBox=${(() => {
-                              const g = pageGeomById[currentPageId] || {};
-                              return g.w && g.h ? `0 0 ${g.w} ${g.h}` : inferViewBox(currentAssets.regions || []);
-                            })()}
-                            preserveAspectRatio="xMinYMin meet"
-                          >
-                            ${(currentAssets.regions || []).map((region) => {
-                              const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
-                              const style = getPolygonStyle(conf);
-                              return html`
-                                <polygon
-                                  key=${region.region_id}
-                                  points=${pointsToAttr(region.polygon)}
-                                  className="region-polygon"
-                                  fill=${style.fill}
-                                  stroke=${style.stroke}
-                                  onMouseEnter=${(e) => {
-                                    try {
-                                      const bb = e.currentTarget.getBBox();
-                                      dbg("H_overlay_3", "static/app.js:polygon:hover", "polygon bbox", {
-                                        pageId: currentPageId,
-                                        regionId: region.region_id,
-                                        bbX: bb.x,
-                                        bbY: bb.y,
-                                        bbW: bb.width,
-                                        bbH: bb.height,
-                                      });
-                                    } catch (_) {}
-                                  }}
-                                  onClick=${() => {
-                                    setSelectedRegion(region);
-                                    setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
-                                  }}
-                                />
-                              `;
-                            })}
-                          </svg>
-                        </div>
+                        <${PageViewer}
+                          isImport=${false}
+                          pageId=${currentPageId}
+                          title=${"Viewer"}
+                          imageUrl=${currentAssets.image_url}
+                          imageAlt=${"Rendered page"}
+                          imageRef=${workspaceImageRef}
+                          onImageLoad=${(e) => {
+                            try {
+                              const img = e.currentTarget;
+                              workspaceImageRef.current = img;
+                              const geom = readImageGeom(img);
+                              if (!geom || !currentPageId) return;
+                              setPageGeomById((prev) => upsertGeom(prev, currentPageId, geom));
+                            } catch (_) {}
+                          }}
+                          maskUrl=${`${currentAssets.mask_url}?t=${maskNonce}`}
+                          maskOk=${maskOkByPage[currentPageId]}
+                          maskStyle=${(() => {
+                            const g = pageGeomById[currentPageId] || {};
+                            return g.cw && g.ch ? { width: `${g.cw}px`, height: `${g.ch}px` } : null;
+                          })()}
+                          onMaskLoad=${() => {
+                            setMaskOkByPage((prev) => {
+                              if (prev?.[currentPageId] === true) return prev;
+                              return { ...prev, [currentPageId]: true };
+                            });
+                          }}
+                          onMaskError=${() => {
+                            setMaskOkByPage((prev) => ({ ...prev, [currentPageId]: false }));
+                          }}
+                          regions=${currentAssets.regions || []}
+                          geomById=${pageGeomById}
+                          setGeomById=${setPageGeomById}
+                          onRegionClick=${(region) => {
+                            setSelectedRegion(region);
+                            setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
+                          }}
+                        />
                       `
                     : html`<p className="text-sm text-sollers-gray">Нет данных страницы.</p>`}
                 </article>
               `
             : html`
-                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
+                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
                   <h2 className="text-lg font-semibold">Offline report viewer</h2>
                   ${importReport && importProjectId
                     ? html`
@@ -1382,37 +1812,6 @@ function App() {
                           Страниц: ${importPages.length || 0} | exported at:
                           <span className="mono">${importReport.meta?.exported_at || "-"}</span>
                         </p>
-                        ${(() => {
-                          const missing = countMissingTranslations(importReport);
-                          if (!missing) return null;
-                          return html`
-                            <div className="mt-3 rounded-xl border border-sollers-grayBorder bg-[#F7F6F5] p-3 text-sm">
-                              <p className="text-sollers-gray">Непереведённых блоков: <span className="mono">${missing}</span></p>
-                              <button
-                                className="mt-2 w-full px-4 py-2 rounded-xl border border-sollers-blue text-sollers-blue transition-transform active:scale-[0.98]"
-                                onClick=${async () => {
-                                  try {
-                                    const resp = await fetch(`/api/import/projects/${importProjectId}/translations/enqueue?lang=ru`, {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify(importReport),
-                                    });
-                                    if (!resp.ok) {
-                                      alert(await resp.text());
-                                      return;
-                                    }
-                                    const payload = await resp.json();
-                                    alert(`Задачи поставлены. Draft: ${payload?.queued?.region_draft || 0}, Refine: ${payload?.queued?.region_refine || 0}`);
-                                  } catch (e) {
-                                    alert(String(e || "enqueue failed"));
-                                  }
-                                }}
-                              >
-                                Перевести непереведённое
-                              </button>
-                            </div>
-                          `;
-                        })()}
                         <div className="mt-4 space-y-3">
                           <div className="flex items-center justify-between gap-2">
                             <button
@@ -1435,78 +1834,34 @@ function App() {
                             ? (() => {
                                 const pageId = importPages[importPageIndex];
                                 const assets = importAssetsByPage[pageId] || buildOfflineAssets(importReport, pageId);
-                                const imageUrl = `/api/projects/${importProjectId}/pages/${pageId}/image?t=${Date.now()}`;
+                                const imageUrl = `/api/projects/${importProjectId}/pages/${pageId}/image`;
                                 return html`
-                                  <div className="viewer-surface">
-                                    <img
-                                      src=${imageUrl}
-                                      alt="Rendered page"
-                                      className="viewer-page"
-                                      ref=${importImageRef}
-                                      onLoad=${(e) => {
-                                        try {
-                                          const img = e.currentTarget;
-                                          importImageRef.current = img;
-                                          const geom = readImageGeom(img);
-                                          if (!geom) return;
-                                          setImportPageGeomById((prev) => upsertGeom(prev, pageId, geom));
-                                          dbg("H_overlay_1_import", "static/app.js:importViewerImage:onLoad", "import image loaded", {
-                                            pageId,
-                                            naturalWidth: geom.w,
-                                            naturalHeight: geom.h,
-                                            rectW: geom.cw,
-                                            rectH: geom.ch,
-                                            parentW: geom.pw,
-                                            parentH: geom.ph,
-                                            regionsCount: (assets.regions || []).length,
-                                          });
-                                        } catch (_) {}
-                                      }}
-                                    />
-                                    <svg
-                                      className="viewer-overlay"
-                                      style=${(() => {
-                                        const g = importPageGeomById[pageId] || {};
-                                        return g.cw && g.ch ? { width: `${g.cw}px`, height: `${g.ch}px` } : null;
-                                      })()}
-                                      viewBox=${(() => {
-                                        const g = importPageGeomById[pageId] || {};
-                                        return g.w && g.h ? `0 0 ${g.w} ${g.h}` : inferViewBox(assets.regions || []);
-                                      })()}
-                                      preserveAspectRatio="xMinYMin meet"
-                                    >
-                                      ${(assets.regions || []).map((region) => {
-                                        const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
-                                        const style = getPolygonStyle(conf);
-                                        return html`
-                                          <polygon
-                                            key=${region.region_id}
-                                            points=${pointsToAttr(region.polygon)}
-                                            className="region-polygon"
-                                            fill=${style.fill}
-                                            stroke=${style.stroke}
-                                            onMouseEnter=${(e) => {
-                                              try {
-                                                const bb = e.currentTarget.getBBox();
-                                                dbg("H_overlay_3_import", "static/app.js:importPolygon:hover", "import polygon bbox", {
-                                                  pageId,
-                                                  regionId: region.region_id,
-                                                  bbX: bb.x,
-                                                  bbY: bb.y,
-                                                  bbW: bb.width,
-                                                  bbH: bb.height,
-                                                });
-                                              } catch (_) {}
-                                            }}
-                                            onClick=${() => {
-                                              setSelectedRegion(region);
-                                              setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
-                                            }}
-                                          />
-                                        `;
-                                      })}
-                                    </svg>
-                                  </div>
+                                  <${PageViewer}
+                                    isImport=${true}
+                                    pageId=${pageId}
+                                    title=${"Offline viewer"}
+                                    imageUrl=${imageUrl}
+                                    imageAlt=${"Rendered page"}
+                                    imageRef=${importImageRef}
+                                    onImageLoad=${(e) => {
+                                      try {
+                                        const img = e.currentTarget;
+                                        importImageRef.current = img;
+                                        const geom = readImageGeom(img);
+                                        if (!geom) return;
+                                        setImportPageGeomById((prev) => upsertGeom(prev, pageId, geom));
+                                      } catch (_) {}
+                                    }}
+                                    maskUrl=${null}
+                                    maskOk=${true}
+                                    regions=${assets.regions || []}
+                                    geomById=${importPageGeomById}
+                                    setGeomById=${setImportPageGeomById}
+                                    onRegionClick=${(region) => {
+                                      setSelectedRegion(region);
+                                      setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
+                                    }}
+                                  />
                                 `;
                               })()
                             : null}
