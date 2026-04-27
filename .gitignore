@@ -11,6 +11,7 @@ __pycache__/
 # local outputs / jobs
 output*/
 web_jobs/
+debug-*.log
 
 # OS / editor
 .DS_Store
