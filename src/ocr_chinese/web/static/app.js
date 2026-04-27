@@ -145,9 +145,7 @@ function buildOfflineAssets(report, pageId) {
       ...r,
       page_id: r.page_id || pageId,
       draft_translation: t.draft_translation,
-      refined_translation: t.refined_translation,
       status_draft: t.status_draft,
-      status_refine: t.status_refine,
     };
   });
   return { page_id: pageId, regions: regionsAug };
@@ -169,8 +167,8 @@ function countMissingTranslations(report) {
       const text = String(r?.text || "").trim();
       if (!text || text === "Текст не найден") continue;
       const t = tRegions?.[rid] || {};
-      const refined = String(t?.refined_translation || "").trim();
-      if (!refined) missing += 1;
+      const draft = String(t?.draft_translation || "").trim();
+      if (!draft) missing += 1;
     }
   }
   return missing;
@@ -180,7 +178,6 @@ function useEtaModel() {
   const refs = useRef({
     ocr: {},
     draft: {},
-    refine: {},
   });
 
   function updateRate(bucket, pageId, current) {
@@ -623,7 +620,7 @@ function App() {
       const entries = [];
       for (const pageId of pages) {
         const hasFinished = translationByPage[pageId]?.regions_total > 0 &&
-          translationByPage[pageId]?.regions_total === translationByPage[pageId]?.refine_done + translationByPage[pageId]?.refine_error;
+          translationByPage[pageId]?.regions_total === translationByPage[pageId]?.draft_done + translationByPage[pageId]?.draft_error;
         if (hasFinished) continue;
         try {
           const resp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`);
@@ -631,7 +628,6 @@ function App() {
           const payload = await resp.json();
           entries.push([pageId, payload]);
           etaModel.updateRate("draft", pageId, Number(payload.draft_done || 0));
-          etaModel.updateRate("refine", pageId, Number(payload.refine_done || 0));
         } catch (_) {
           // noop
         }
@@ -742,32 +738,24 @@ function App() {
         setRegionTranslation({ statusLabel: "pending", text: "", error: "" });
         return;
       }
-      if (entry.refined_translation) {
-        setRegionTranslation({
-          statusLabel: `refined (${entry.status_refine || "done"})`,
-          text: entry.refined_translation,
-          error: "",
-        });
-        return;
-      }
       if (entry.draft_translation) {
         setRegionTranslation({
-          statusLabel: `draft (${entry.status_draft || "done"}) → refining`,
+          statusLabel: `draft (${entry.status_draft || "done"})`,
           text: entry.draft_translation,
           error: "",
         });
         return;
       }
-      if (entry.error_draft || entry.error_refine) {
+      if (entry.error_draft) {
         setRegionTranslation({
           statusLabel: "error",
           text: "",
-          error: String(entry.error_refine || entry.error_draft || "Translation failed"),
+          error: String(entry.error_draft || "Translation failed"),
         });
         return;
       }
       setRegionTranslation({
-        statusLabel: `pending (draft:${entry.status_draft || "pending"}, refine:${entry.status_refine || "pending"})`,
+        statusLabel: `pending (draft:${entry.status_draft || "pending"})`,
         text: "",
         error: "",
       });
@@ -783,11 +771,8 @@ function App() {
     if (!projectId) {
       apply({
         draft_translation: selectedRegion.draft_translation,
-        refined_translation: selectedRegion.refined_translation,
         status_draft: selectedRegion.status_draft,
-        status_refine: selectedRegion.status_refine,
         error_draft: selectedRegion.error_draft,
-        error_refine: selectedRegion.error_refine,
       });
       return undefined;
     }
@@ -1019,15 +1004,13 @@ function App() {
       const ocrTotRaw = Number(o.total_regions || 0);
       const ocrTot = ocrTotRaw > 0 ? ocrTotRaw : Number(avgRegionsPerPage || 0);
       const draftDone = Number(t.draft_done || 0);
-      const refineDone = Number(t.refine_done || 0);
+      const draftError = Number(t.draft_error || 0);
       const regionsTotalRaw = Number(t.regions_total || 0);
       const regionsTotal = regionsTotalRaw > 0 ? regionsTotalRaw : (ocrTot > 0 ? ocrTot : Number(avgRegionsPerPage || 0));
 
       const ocrEtaRaw = etaModel.estimateWithFallback("ocr", pageId, ocrCur, ocrTot, null);
       const draftEta = etaModel.estimateWithFallback("draft", pageId, draftDone, regionsTotal, null);
-      const refineEta = etaModel.estimateWithFallback("refine", pageId, refineDone, regionsTotal, null);
-
-      const translateEta = (draftEta != null && refineEta != null) ? (draftEta + refineEta) : (draftEta ?? refineEta ?? null);
+      const translateEta = draftEta ?? null;
       const ocrEta = smoothEta(`${pageId}:ocr`, ocrEtaRaw, "stage");
       const translateEtaSmooth = smoothEta(`${pageId}:translate`, translateEta, "stage");
       const pageEtaRaw =
@@ -1063,9 +1046,9 @@ function App() {
       return {
         pageId,
         ocrPct: toPct(ocrCur, ocrTot || 0),
-        translatePct: toPct(refineDone + Number(t.refine_error || 0), regionsTotal || 0),
+        translatePct: toPct(draftDone + draftError, regionsTotal || 0),
         ocrLabel: `${ocrCur}/${ocrTotRaw || (ocrTot > 0 ? `~${Math.round(ocrTot)}` : "?")}`,
-        translateLabel: `${refineDone}/${regionsTotalRaw || (regionsTotal > 0 ? `~${Math.round(regionsTotal)}` : "?")}`,
+        translateLabel: `${draftDone}/${regionsTotalRaw || (regionsTotal > 0 ? `~${Math.round(regionsTotal)}` : "?")}`,
         ocrEta,
         translateEta: translateEtaSmooth,
         pageEta,
