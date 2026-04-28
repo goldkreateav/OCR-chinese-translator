@@ -691,7 +691,10 @@ class RegionTextRecognizer:
             if isinstance(variant_img, np.ndarray) and variant_img.ndim == 2:
                 paddle_img = cv2.cvtColor(variant_img, cv2.COLOR_GRAY2BGR)
             t0 = time.perf_counter()
+            result = None
             try:
+                # Prefer "recognition-only" path for older PaddleOCR APIs.
+                # Newer PaddleOCR 3.x pipelines may reject det/rec kwargs entirely.
                 result = self._paddle.ocr(
                     paddle_img,
                     det=False,
@@ -700,6 +703,7 @@ class RegionTextRecognizer:
                 )
             except Exception:
                 try:
+                    # Full OCR (det+rec) on the ROI crop.
                     result = self._paddle.ocr(paddle_img, cls=self._use_angle_cls)
                 except Exception:
                     try:
@@ -712,6 +716,20 @@ class RegionTextRecognizer:
                             raise
             call_ms = (time.perf_counter() - t0) * 1000.0
             text, confidence = _parse_recognition_result(result)
+            # Some PaddleOCR pipeline variants accept the call but return empty when det=False
+            # (common with newer pipeline wrappers). Retry with full OCR on the same crop.
+            if useful_length(text) == 0:
+                try:
+                    result2 = self._paddle.ocr(paddle_img, cls=self._use_angle_cls)
+                except Exception:
+                    try:
+                        result2 = self._paddle.ocr(paddle_img)
+                    except Exception:
+                        result2 = None
+                if result2 is not None:
+                    text2, conf2 = _parse_recognition_result(result2)
+                    if useful_length(text2) > 0 or conf2 > confidence:
+                        text, confidence = text2, conf2
             score = score_ocr_result(text, confidence)
             if self.config.profile_variant_calls or self.config.debug_raw_results:
                 payload = {

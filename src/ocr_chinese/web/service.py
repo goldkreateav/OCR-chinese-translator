@@ -14,6 +14,7 @@ import time
 import uuid
 import zipfile
 import io
+from typing import Any
 
 from fastapi import HTTPException, UploadFile
 
@@ -30,6 +31,46 @@ from ..translate import (
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _read_json_safe(path: Path, default: dict | list | None = None) -> Any:
+    """
+    Best-effort JSON loader.
+
+    Prevents transient empty/partial writes from crashing polling endpoints.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return default if default is not None else {}
+    if not str(raw).strip():
+        return default if default is not None else {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default if default is not None else {}
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """
+    Atomically write text to disk (best-effort on Windows).
+
+    Avoids readers observing an empty/half-written JSON file during polling.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{uuid.uuid4().hex}")
+    tmp.write_text(text, encoding=encoding)
+    try:
+        tmp.replace(path)
+    except Exception:
+        # Fallback if replace() fails across FS boundaries / permission quirks.
+        try:
+            path.write_text(text, encoding=encoding)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @dataclass
@@ -403,14 +444,17 @@ class ProjectService:
         path = self._page_regions_translation_path(project_id, page_id, lang)
         if not path.exists():
             return {"page_id": page_id, "target_lang": lang, "items": {}}
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {"page_id": page_id, "target_lang": lang, "items": {}}
+        payload = _read_json_safe(path, default=None)
+        if isinstance(payload, dict):
+            payload.setdefault("page_id", page_id)
+            payload.setdefault("target_lang", lang)
+            payload.setdefault("items", {})
+            return payload
+        return {"page_id": page_id, "target_lang": lang, "items": {}}
 
     def _write_regions_translation_payload(self, project_id: str, page_id: str, lang: str, payload: dict) -> None:
         path = self._page_regions_translation_path(project_id, page_id, lang)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _upsert_region_translation(
         self,
@@ -1002,6 +1046,18 @@ class ProjectService:
         is_cuda = ocr_device == "cuda"
         cpu = int(os.cpu_count() or 4)
         debug_raw = str(os.getenv("OCR_DEBUG_RAW_RESULTS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+        # On Windows, the latest PaddleOCR/PaddleX pipeline can fail at runtime with
+        # oneDNN/PIR executor issues in detection, while RapidOCR works reliably for ROI recognition.
+        # Allow forcing Paddle recognition via env var if needed.
+        force_paddle = str(os.getenv("OCR_FORCE_PADDLE_RECOGNITION", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        backend = "paddleocr"
+        if sys.platform.startswith("win") and not force_paddle:
+            backend = "rapidocr"
         auto_workers = max(2, min(8, cpu // 2))
         workers = options.ocr_workers if options.ocr_workers is not None else auto_workers
         workers = max(1, int(workers))
@@ -1010,7 +1066,7 @@ class ProjectService:
             if is_cuda:
                 max_workers = min(8, max(2, workers))
             return RecognitionConfig(
-                backend="paddleocr",
+                backend=backend,
                 mode="hybrid",
                 use_multipass=True,
                 parallel_ocr=True,
@@ -1028,7 +1084,7 @@ class ProjectService:
             if is_cuda:
                 max_workers = min(6, max(2, workers))
             return RecognitionConfig(
-                backend="paddleocr",
+                backend=backend,
                 mode="hybrid",
                 use_multipass=False,
                 parallel_ocr=True,
@@ -1047,7 +1103,7 @@ class ProjectService:
         # eco (default): keep CPU usage low for personal machines
         if is_cuda:
             return RecognitionConfig(
-                backend="paddleocr",
+                backend=backend,
                 mode="fast",
                 use_multipass=False,
                 parallel_ocr=True,
@@ -1068,7 +1124,7 @@ class ProjectService:
                 ocr_device=ocr_device,
             )
         return RecognitionConfig(
-            backend="paddleocr",
+            backend=backend,
             mode="fast",
             use_multipass=False,
             parallel_ocr=False,
@@ -1105,7 +1161,14 @@ class ProjectService:
         status_path = self._project_dir(project_id) / "status.json"
         if not status_path.exists():
             raise HTTPException(status_code=404, detail="Project not found.")
-        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status = _read_json_safe(status_path, default={})
+        if not isinstance(status, dict):
+            status = {}
+        # If status.json was transiently empty/invalid, keep polling stable instead of 500.
+        status.setdefault("project_id", project_id)
+        status.setdefault("status", "running")
+        status.setdefault("stage", "init")
+        status.setdefault("updated_at", _utc_now())
 
         # Best-effort: keep translation overview fresh and only mark the project
         # fully done when translation settled.
@@ -1123,7 +1186,7 @@ class ProjectService:
                     status["stage"] = "done"
                     status["updated_at"] = _utc_now()
                 # Persist updated snapshot (keeps polling consistent).
-                status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+                _atomic_write_text(status_path, json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 
@@ -1263,7 +1326,7 @@ class ProjectService:
 
     def _write_status(self, project_id: str, status: dict) -> None:
         path = self._project_dir(project_id) / "status.json"
-        path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(path, json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _write_report(self, project_id: str, report: dict) -> None:
         project_dir = self._project_dir(project_id)
