@@ -206,6 +206,15 @@ class RegionTextRecognizer:
                 raise RuntimeError(self._init_error)
             return
         use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
+        if use_gpu:
+            # Some PaddleOCR versions don't accept `use_gpu` kwarg. Prefer setting
+            # the global Paddle device, and keep ctor kwargs optional.
+            try:
+                import paddle  # type: ignore
+
+                paddle.set_device("gpu")
+            except Exception:
+                pass
         ctor_options = [
             dict(
                 lang=config.lang,

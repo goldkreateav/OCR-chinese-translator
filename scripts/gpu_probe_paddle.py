@@ -70,7 +70,6 @@ def main() -> int:
         ctor_options = [
             dict(
                 lang="ch",
-                use_gpu=True,
                 show_log=False,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
@@ -78,17 +77,25 @@ def main() -> int:
             ),
             dict(
                 lang="ch",
-                use_gpu=True,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
             ),
-            dict(lang="ch", use_gpu=True, show_log=False),
-            dict(lang="ch", use_gpu=True),
-            dict(use_gpu=True),
+            dict(lang="ch", show_log=False),
+            dict(lang="ch"),
+            dict(),
         ]
 
         last_exc: Exception | None = None
+        # First, try setting device to GPU (works even if PaddleOCR ctor has no use_gpu kwarg).
+        try:
+            import paddle  # type: ignore
+
+            paddle.set_device("gpu")
+            payload["paddle_device"] = str(paddle.get_device())
+        except Exception:
+            pass
+
         for kw in ctor_options:
             try:
                 _ocr = PaddleOCR(**kw)
@@ -115,6 +122,13 @@ def main() -> int:
             payload["error"] = "paddle_is_cpu_only"
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 6
+
+        # If Paddle is CUDA-compiled but device is still CPU, treat as not-ok.
+        if isinstance(payload.get("paddle_device"), str) and str(payload["paddle_device"]).lower().startswith("cpu"):
+            payload["ok"] = False
+            payload["error"] = "paddle_device_cpu"
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 7
 
         payload["ok"] = True
         print(json.dumps(payload, ensure_ascii=False, indent=2))
