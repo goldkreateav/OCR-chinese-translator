@@ -18,11 +18,15 @@ set -euo pipefail
 #   PYTHON=python3.11 ./scripts/gpu_check_and_fix_ubuntu.sh --fix
 
 FIX=0
+FIX_USER=0
+PRINT_FIX=0
 PYTHON="${PYTHON:-python3}"
 
 for arg in "${@:-}"; do
   case "$arg" in
     --fix) FIX=1 ;;
+    --fix-user) FIX_USER=1 ;;
+    --print-fix) PRINT_FIX=1 ;;
     --python=*) PYTHON="${arg#--python=}" ;;
     *)
       echo "Unknown arg: $arg" >&2
@@ -56,12 +60,33 @@ say "Environment"
 echo "Repo: $repo_root"
 echo "Python: $PYTHON"
 echo "Fix mode: $FIX"
+echo "Fix-user mode: $FIX_USER"
+echo "Print-fix mode: $PRINT_FIX"
+
+if [[ "$FIX" -eq 1 && "$FIX_USER" -eq 1 ]]; then
+  die "Use only one of --fix or --fix-user."
+fi
 
 say "Step 1: Check NVIDIA driver (nvidia-smi)"
+CUDA_MAJOR_MINOR=""
 if have nvidia-smi; then
   nvidia-smi || warn "nvidia-smi exists but failed. Driver may be broken."
+  # Try to detect CUDA version reported by the driver, e.g. "CUDA Version: 12.3"
+  CUDA_MAJOR_MINOR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9]\+\.[0-9]\+\).*/\1/p' | head -n 1 || true)"
+  if [[ -n "$CUDA_MAJOR_MINOR" ]]; then
+    echo "Detected driver-reported CUDA Version: $CUDA_MAJOR_MINOR"
+  fi
 else
   warn "nvidia-smi not found -> NVIDIA driver not installed (or not in PATH)."
+  if [[ "$PRINT_FIX" -eq 1 ]]; then
+    say "Commands to install NVIDIA driver (requires root)"
+    cat <<'EOF'
+sudo apt-get update
+sudo apt-get install -y ubuntu-drivers-common
+sudo ubuntu-drivers autoinstall
+# reboot
+EOF
+  fi
   if [[ "$FIX" -eq 1 ]]; then
     require_sudo
     say "Attempting to install NVIDIA driver (ubuntu-drivers autoinstall)"
@@ -78,6 +103,13 @@ else
 fi
 
 say "Step 2: Ensure basic OS packages"
+if [[ "$PRINT_FIX" -eq 1 ]]; then
+  say "Commands to install OS deps (requires root)"
+  cat <<'EOF'
+sudo apt-get update
+sudo apt-get install -y build-essential python3-venv python3-pip
+EOF
+fi
 if [[ "$FIX" -eq 1 ]]; then
   require_sudo
   sudo apt-get update
@@ -86,26 +118,69 @@ fi
 
 say "Step 3: Ensure pip + wheel"
 "$PYTHON" -m pip --version >/dev/null 2>&1 || warn "pip not available for $PYTHON"
-if [[ "$FIX" -eq 1 ]]; then
+if [[ "$FIX" -eq 1 || "$FIX_USER" -eq 1 ]]; then
   "$PYTHON" -m pip install -U pip setuptools wheel
 fi
 
+choose_paddle_index() {
+  # Map detected CUDA version to Paddle wheel index.
+  # Paddle publishes stable indices like /cu118, /cu123, /cu126.
+  local cuda_ver="${1:-}"
+  if [[ -z "$cuda_ver" ]]; then
+    echo ""
+    return 0
+  fi
+  case "$cuda_ver" in
+    11.8*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu118/" ;;
+    12.3*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu123/" ;;
+    12.6*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu126/" ;;
+    12.5*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu126/" ;;
+    12.4*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu123/" ;;
+    12.2*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu123/" ;;
+    12.1*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu123/" ;;
+    12.0*) echo "https://www.paddlepaddle.org.cn/packages/stable/cu118/" ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
 say "Step 4: Install PaddleOCR GPU Python deps (best-effort)"
-if [[ "$FIX" -eq 1 ]]; then
-  # NOTE: Paddle GPU wheels depend on CUDA version; user may need to pick the right package index.
-  # We try a generic install first; if it fails, we print guidance.
+if [[ "$FIX" -eq 1 || "$FIX_USER" -eq 1 ]]; then
+  # NOTE: Paddle GPU wheels depend on CUDA version. Prefer a matching stable index if we can detect it.
+  PADDLE_INDEX="$(choose_paddle_index "$CUDA_MAJOR_MINOR")"
+  if [[ -n "$PADDLE_INDEX" ]]; then
+    echo "Using Paddle wheel index: $PADDLE_INDEX"
+  else
+    warn "Could not detect CUDA version for selecting Paddle wheel index; will try generic install."
+    warn "If GPU install fails, run 'nvidia-smi' and pick cu118/cu123/cu126 accordingly."
+  fi
+
   set +e
-  "$PYTHON" -m pip install -U paddleocr
+  "$PYTHON" -m pip install -U paddleocr --extra-index-url https://pypi.org/simple
   pip_rc=$?
   if [[ "$pip_rc" -ne 0 ]]; then
     warn "Failed to install paddleocr. Check Python version compatibility and network access."
   fi
-  "$PYTHON" -m pip install -U paddlepaddle-gpu
+
+  # Remove CPU build if present; it can mask GPU build import.
+  "$PYTHON" -m pip uninstall -y paddlepaddle paddlepaddle-gpu >/dev/null 2>&1
+
+  if [[ -n "$PADDLE_INDEX" ]]; then
+    "$PYTHON" -m pip install -U paddlepaddle-gpu -i "$PADDLE_INDEX" --extra-index-url https://pypi.org/simple
+    gpu_rc=$?
+  else
+    "$PYTHON" -m pip install -U paddlepaddle-gpu --extra-index-url https://pypi.org/simple
+    gpu_rc=$?
+  fi
   gpu_rc=$?
   set -e
   if [[ "$gpu_rc" -ne 0 ]]; then
     warn "Failed to install paddlepaddle-gpu automatically."
-    warn "You likely need the correct wheel for your CUDA version. See Paddle installation guide for 'paddlepaddle-gpu'."
+    warn "You likely need the correct wheel index for your CUDA version:"
+    warn "- CUDA 11.8 -> https://www.paddlepaddle.org.cn/packages/stable/cu118/"
+    warn "- CUDA 12.3 -> https://www.paddlepaddle.org.cn/packages/stable/cu123/"
+    warn "- CUDA 12.6 -> https://www.paddlepaddle.org.cn/packages/stable/cu126/"
   fi
 else
   echo "(diagnose-only) Skipping pip installs. Re-run with --fix to install paddleocr + paddlepaddle-gpu."

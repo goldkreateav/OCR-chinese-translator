@@ -65,17 +65,41 @@ def main() -> int:
     try:
         from paddleocr import PaddleOCR  # type: ignore
 
-        # If CUDA build is present, PaddleOCR should accept use_gpu=True.
-        # If not, this may throw or silently run on CPU; we treat init failure as not-ok.
-        _ocr = PaddleOCR(
-            lang="ch",
-            use_gpu=True,
-            show_log=False,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
-        payload["paddleocr_init_ok"] = True
+        # Probe constructor compatibility across PaddleOCR versions.
+        # Some versions don't accept `show_log` or some doc-orientation kwargs.
+        ctor_options = [
+            dict(
+                lang="ch",
+                use_gpu=True,
+                show_log=False,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            ),
+            dict(
+                lang="ch",
+                use_gpu=True,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            ),
+            dict(lang="ch", use_gpu=True, show_log=False),
+            dict(lang="ch", use_gpu=True),
+            dict(use_gpu=True),
+        ]
+
+        last_exc: Exception | None = None
+        for kw in ctor_options:
+            try:
+                _ocr = PaddleOCR(**kw)
+                payload["paddleocr_init_ok"] = True
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                payload["paddleocr_init_ok"] = False
+        if last_exc is not None and not payload.get("paddleocr_init_ok"):
+            raise last_exc
 
         # Best-effort: try to see where Paddle thinks it runs.
         try:
@@ -84,6 +108,13 @@ def main() -> int:
             payload["paddle_device"] = str(paddle.get_device())
         except Exception:
             pass
+
+        # If Paddle isn't compiled with CUDA, treat as not-ok even if ctor "worked".
+        if payload.get("paddle_is_compiled_with_cuda") is False:
+            payload["ok"] = False
+            payload["error"] = "paddle_is_cpu_only"
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 6
 
         payload["ok"] = True
         print(json.dumps(payload, ensure_ascii=False, indent=2))
