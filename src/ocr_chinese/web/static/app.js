@@ -32,10 +32,11 @@ function formatDuration(seconds) {
 function formatStage(stage) {
   if (!stage) return "ожидание";
   const value = String(stage).toLowerCase();
-  if (value.includes("mask")) return "Mask";
-  if (value.includes("ocr")) return "OCR";
-  if (value.includes("translate")) return "Translate";
-  if (value.includes("render")) return "Render";
+  if (value.includes("mask")) return "маска";
+  if (value.includes("ocr")) return "ocr";
+  if (value.includes("translate")) return "ocr+перевод";
+  if (value.includes("render")) return "рендер";
+  if (value.includes("done")) return "готово";
   return value;
 }
 
@@ -134,6 +135,15 @@ function parseJsonSafe(raw) {
   } catch (_) {
     return null;
   }
+}
+
+function filenameFromContentDisposition(h) {
+  const raw = String(h || "");
+  const m = raw.match(/filename="([^"]+)"/i);
+  if (m && m[1]) return m[1];
+  const m2 = raw.match(/filename=([^;]+)/i);
+  if (m2 && m2[1]) return String(m2[1]).trim().replace(/^"|"$/g, "");
+  return "";
 }
 
 function buildOfflineAssets(report, pageId) {
@@ -290,7 +300,6 @@ function App() {
   const [generateInFlight, setGenerateInFlight] = useState(false);
   const [importReport, setImportReport] = useState(null);
   const [importError, setImportError] = useState("");
-  const [importPdf, setImportPdf] = useState(null);
   const [importProjectId, setImportProjectId] = useState(null);
   const [importPages, setImportPages] = useState([]);
   const [importPageIndex, setImportPageIndex] = useState(0);
@@ -298,10 +307,13 @@ function App() {
   const [importPageGeomById, setImportPageGeomById] = useState({});
   const [importViewByPage, setImportViewByPage] = useState({}); // pageId -> {rotSteps, scale, panX, panY}
   const [importAssetsRevByPage, setImportAssetsRevByPage] = useState({}); // pageId -> number (for stable cache buster)
+  const [importBundleFile, setImportBundleFile] = useState(null);
   const [uploadFile, setUploadFile] = useState(null);
   const [dpi, setDpi] = useState(400);
   const [ocrMode, setOcrMode] = useState("eco");
-  const [ocrDevice, setOcrDevice] = useState("cpu");
+  const [ocrDevice, setOcrDevice] = useState("cuda");
+  const [showStatus, setShowStatus] = useState(false);
+  const [importOpenInFlight, setImportOpenInFlight] = useState(false);
 
   const etaModel = useEtaModel();
   const routeRef = useRef(route);
@@ -497,6 +509,10 @@ function App() {
         const bridge = payload.quality_bridge_enabled ? "bridge:on" : "bridge:off";
         setVersion(`${appVer} (${bridge})`);
         setRuntimeInfo(payload || null);
+        // Default to GPU when available; otherwise CPU. Backend still auto-falls back.
+        const cudaOk = Boolean(payload?.ort_cuda_available);
+        setOcrMode("eco");
+        setOcrDevice(cudaOk ? "cuda" : "cpu");
       } catch (_) {
         // noop
       }
@@ -515,6 +531,14 @@ function App() {
       : "cpu";
 
   const webEnableRetryOcr = Boolean(runtimeInfo?.web_enable_retry_ocr);
+  const showProgress = Object.keys(progressPages || {}).length > 0;
+
+  const stepMaskDone = stage !== "ожидание" && stage !== "рендер" ? true : stage === "маска" ? false : false;
+  const stepMaskActive = stage === "маска";
+  const stepOcrActive = stage === "ocr";
+  const stepTranslateActive = stage === "перевод";
+  const stepOcrOrTranslateActive = stepOcrActive || stepTranslateActive;
+  const stepDone = statusState === "done";
 
   async function fetchStatus() {
     if (!projectId) return;
@@ -809,29 +833,51 @@ function App() {
     setStatusText("Uploaded");
   }
 
+  async function exportBundle() {
+    if (!projectId) return;
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/export/ocpkg`);
+      if (!resp.ok) {
+        alert(await resp.text());
+        return;
+      }
+      const blob = await resp.blob();
+      const cd = resp.headers.get("content-disposition") || "";
+      const name = filenameFromContentDisposition(cd) || `${(filename || "document").replace(/\.pdf$/i, "")}_ocr.ocpkg`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(String(e || "Export failed"));
+    }
+  }
+
   async function handleGenerate() {
     if (!projectId) return;
     setGenerateInFlight(true);
-    setStatusText("Generating...");
+    setStatusText("Запуск…");
     const resp = await fetch(`/api/projects/${projectId}/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dpi: Number(dpi || 400),
-        ocr_mode: ocrMode,
-        ocr_device: ocrDevice,
+        ocr_mode: "eco",
+        ocr_device: ocrDevice, // backend will auto-fallback to CPU if CUDA is not usable
       }),
     });
     if (!resp.ok) {
       setGenerateInFlight(false);
-      setStatusText("Generation failed");
+      setStatusText("Ошибка запуска");
       alert(await resp.text());
       return;
     }
     // Generation runs in background; /status polling reflects real completion.
     await loadPages(projectId);
     setGenerateInFlight(false);
-    setStatusText("Started");
+    setStatusText("В процессе");
   }
 
   async function handleRetryRegion() {
@@ -924,76 +970,48 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
-  function importReportFile(file) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const payload = parseJsonSafe(String(reader.result || ""));
-      dbg("H_import_1", "static/app.js:importReportFile", "import json read", {
-        hasPayload: !!payload,
-        hasPages: !!payload?.pages,
-        hasRegionsByPage: !!payload?.regionsByPage,
-        pagesLen: Array.isArray(payload?.pages) ? payload.pages.length : null,
-      });
-      if (!payload || !payload.pages || !payload.regionsByPage) {
-        setImportError("Неверный формат отчёта: ожидается JSON export schema v1.0.0.");
-        setImportReport(null);
+  async function openImportedViewer() {
+    if (!importBundleFile) return;
+    if (importOpenInFlight) return;
+    setImportOpenInFlight(true);
+    setImportError("");
+    try {
+      const fd = new FormData();
+      fd.append("file", importBundleFile);
+      fd.append("dpi", String(Number(dpi || 400)));
+      const resp = await fetch("/api/import/ocpkg", { method: "POST", body: fd });
+      if (!resp.ok) {
+        const t = await resp.text();
+        setImportError(`Не удалось открыть файл: ${t}`);
+        setImportOpenInFlight(false);
         return;
       }
-      setImportError("");
-      setImportReport(payload);
-      dbg("H_import_2", "static/app.js:importReportFile", "import report set", {
-        pagesLen: Array.isArray(payload.pages) ? payload.pages.length : null,
-        meta: payload?.meta ? Object.keys(payload.meta) : null,
+      const payload = await resp.json();
+      const pid = payload.project_id;
+      const pages = payload.pages || [];
+      const report = payload.report || null;
+      if (!report || !report.pages || !report.regionsByPage) {
+        setImportError("Неверный формат отчёта внутри файла.");
+        setImportOpenInFlight(false);
+        return;
+      }
+      setImportReport(report);
+      setImportProjectId(pid);
+      setImportPages(pages);
+      setImportPageIndex(0);
+      setImportAssetsRevByPage(() => {
+        const rev = {};
+        for (const pageId of pages || []) rev[String(pageId)] = 1;
+        return rev;
       });
-    };
-    reader.readAsText(file, "utf-8");
-  }
-
-  async function openImportedViewer() {
-    if (!importReport || !importPdf) return;
-    const metaDpi = Number(importReport?.meta?.dpi || 400);
-    const metaMode = String(importReport?.meta?.ocr_mode || "eco").toLowerCase();
-    const clamp = metaMode === "eco" ? 360 : (metaMode === "balanced" ? 380 : metaDpi);
-    const importDpi = Math.min(metaDpi, clamp);
-    const fd = new FormData();
-    fd.append("file", importPdf);
-    fd.append("dpi", String(importDpi));
-    dbg("H_import_3", "static/app.js:openImportedViewer", "start import render", {
-      pdfName: importPdf?.name,
-      pages: importReport?.pages?.length || 0,
-      importDpi,
-      metaDpi,
-      metaMode,
-    });
-    const resp = await fetch("/api/import/projects", {
-      method: "POST",
-      body: fd,
-    });
-    if (!resp.ok) {
-      const t = await resp.text();
-      setImportError(`Не удалось отрендерить PDF: ${t}`);
-      dbg("H_import_4", "static/app.js:openImportedViewer", "import render failed", { status: resp.status });
-      return;
+      const map = {};
+      for (const pageId of pages) map[pageId] = buildOfflineAssets(report, pageId);
+      setImportAssetsByPage(map);
+    } catch (e) {
+      setImportError(`Не удалось открыть файл: ${String(e || "ошибка")}`);
+    } finally {
+      setImportOpenInFlight(false);
     }
-    const payload = await resp.json();
-    const pid = payload.project_id;
-    const pages = payload.pages || [];
-    setImportProjectId(pid);
-    setImportPages(pages);
-    setImportPageIndex(0);
-    setImportAssetsRevByPage(() => {
-      const rev = {};
-      for (const pageId of pages || []) rev[String(pageId)] = 1;
-      return rev;
-    });
-    // Build offline assets from report for each page (regions + translations).
-    const map = {};
-    for (const pageId of pages) {
-      map[pageId] = buildOfflineAssets(importReport, pageId);
-    }
-    setImportAssetsByPage(map);
-    dbg("H_import_5", "static/app.js:openImportedViewer", "import viewer ready", { pid, pagesLen: pages.length });
   }
 
   const rows = useMemo(() => {
@@ -1005,11 +1023,15 @@ function App() {
       const ocrTot = ocrTotRaw > 0 ? ocrTotRaw : Number(avgRegionsPerPage || 0);
       const draftDone = Number(t.draft_done || 0);
       const draftError = Number(t.draft_error || 0);
+      const draftRunning = Number(t.draft_running || 0);
       const regionsTotalRaw = Number(t.regions_total || 0);
       const regionsTotal = regionsTotalRaw > 0 ? regionsTotalRaw : (ocrTot > 0 ? ocrTot : Number(avgRegionsPerPage || 0));
+      const translateHasRealData = regionsTotalRaw > 0 || draftDone > 0 || draftError > 0 || draftRunning > 0;
 
       const ocrEtaRaw = etaModel.estimateWithFallback("ocr", pageId, ocrCur, ocrTot, null);
-      const draftEta = etaModel.estimateWithFallback("draft", pageId, draftDone, regionsTotal, null);
+      const draftEta = translateHasRealData
+        ? etaModel.estimateWithFallback("draft", pageId, draftDone, regionsTotal, null)
+        : null;
       const translateEta = draftEta ?? null;
       const ocrEta = smoothEta(`${pageId}:ocr`, ocrEtaRaw, "stage");
       const translateEtaSmooth = smoothEta(`${pageId}:translate`, translateEta, "stage");
@@ -1046,9 +1068,11 @@ function App() {
       return {
         pageId,
         ocrPct: toPct(ocrCur, ocrTot || 0),
-        translatePct: toPct(draftDone + draftError, regionsTotal || 0),
+        translatePct: translateHasRealData ? toPct(draftDone + draftError, regionsTotal || 0) : 0,
         ocrLabel: `${ocrCur}/${ocrTotRaw || (ocrTot > 0 ? `~${Math.round(ocrTot)}` : "?")}`,
-        translateLabel: `${draftDone}/${regionsTotalRaw || (regionsTotal > 0 ? `~${Math.round(regionsTotal)}` : "?")}`,
+        translateLabel: translateHasRealData
+          ? `${draftDone}/${regionsTotalRaw || (regionsTotal > 0 ? `~${Math.round(regionsTotal)}` : "?")}`
+          : "",
         ocrEta,
         translateEta: translateEtaSmooth,
         pageEta,
@@ -1413,11 +1437,15 @@ function App() {
           onPointerCancel=${endDrag}
           onWheel=${onWheel}
         >
+          ${!hasEverRenderedRef.current && !canRenderStable
+            ? html`<div className="viewer-placeholder">Загрузка…</div>`
+            : null}
           <div
             className="viewer-transformLayer"
             style=${{
               ...(layerSizeStyle || {}),
-              ...(!hasEverRenderedRef.current && !canRenderStable ? { visibility: "hidden" } : null),
+              // Keep the layer in DOM to avoid white flashes during first layout.
+              ...(!hasEverRenderedRef.current && !canRenderStable ? { opacity: 0 } : null),
               ...transformStyle,
             }}
           >
@@ -1445,8 +1473,8 @@ function App() {
               ? html`
                   <img
                     src=${stableMaskSrc}
-                    alt="Mask overlay"
-                    className="viewer-mask"
+                    alt="Mask (preload)"
+                    className="viewer-maskPreload"
                     style=${layerSizeStyle}
                     onLoad=${onMaskLoad}
                     onError=${onMaskError}
@@ -1464,11 +1492,12 @@ function App() {
               ${(regions || []).map((region) => {
                 const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
                 const style = getPolygonStyle(conf);
+                const isSelected = String(selectedRegion?.region_id || "") === String(region?.region_id || "");
                 return html`
                   <polygon
                     key=${region.region_id}
                     points=${pointsToAttr(region.polygon)}
-                    className="region-polygon"
+                    className=${`region-polygon ${isSelected ? "is-selected" : ""}`}
                     fill=${style.fill}
                     stroke=${style.stroke}
                     onClick=${() => {
@@ -1496,9 +1525,13 @@ function App() {
         <div className="max-w-[1400px] mx-auto px-4 md:px-8 py-4 flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl md:text-4xl tracking-tight text-sollers-graphite font-semibold">
-              SOLLERS OCR Workspace
+              OCR + перевод (PDF)
             </h1>
-            <p className="text-sm text-sollers-gray mt-1">OCR + перевод, прогресс по страницам, импорт/экспорт отчётов</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className=${`step ${stepMaskActive ? "is-active" : stepMaskDone ? "is-done" : ""}`}>Маска</span>
+              <span className="step-sep">→</span>
+              <span className=${`step ${stepOcrOrTranslateActive ? "is-active" : stepDone ? "is-done" : ""}`}>OCR+перевод</span>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -1509,7 +1542,7 @@ function App() {
               }`}
               onClick=${() => goTo("workspace")}
             >
-              Workspace
+              Обработка PDF
             </button>
             <button
               className=${`px-4 py-2 rounded-xl border text-sm transition-transform active:scale-[0.98] ${
@@ -1519,7 +1552,7 @@ function App() {
               }`}
               onClick=${() => goTo("import")}
             >
-              Import JSON
+              Открыть результат
             </button>
           </div>
         </div>
@@ -1530,7 +1563,7 @@ function App() {
           ? html`
               <section className="space-y-5 min-w-0">
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
-                  <h2 className="text-lg font-semibold">Проект</h2>
+                  <h2 className="text-lg font-semibold">Файл</h2>
                   <div className="mt-4 space-y-4">
                     <label className="block space-y-2">
                       <span className="text-sm text-sollers-gray">PDF файл</span>
@@ -1552,108 +1585,86 @@ function App() {
                         className="w-full rounded-xl border border-sollers-grayBorder p-2"
                       />
                     </label>
-                    <label className="block space-y-2">
-                      <span className="text-sm text-sollers-gray">OCR mode</span>
-                      <select
-                        value=${ocrMode}
-                        onChange=${(e) => setOcrMode(e.target.value)}
-                        className="w-full rounded-xl border border-sollers-grayBorder p-2"
-                      >
-                        <option value="eco">eco</option>
-                        <option value="balanced">balanced</option>
-                        <option value="max">max</option>
-                      </select>
-                    </label>
-                    <label className="block space-y-2">
-                      <span className="text-sm text-sollers-gray">OCR device</span>
-                      <select
-                        value=${ocrDevice}
-                        onChange=${(e) => setOcrDevice(e.target.value)}
-                        className="w-full rounded-xl border border-sollers-grayBorder p-2"
-                      >
-                        <option value="cpu">cpu</option>
-                        <option value="cuda">cuda (NVIDIA)</option>
-                      </select>
-                    </label>
+                    <div className="text-sm text-sollers-gray">
+                      Режим: <span className="mono">eco</span> · Устройство: 
+                      <span className="mono">${derivedCudaAvailable ? "GPU (если доступно)" : "CPU"}</span>
+                    </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
                         onClick=${handleUpload}
                         disabled=${!uploadFile}
                         className="px-4 py-2 rounded-xl border border-sollers-orange bg-sollers-orange text-sollers-white disabled:opacity-50 transition-transform active:scale-[0.98]"
                       >
-                        Upload PDF
+                        Загрузить PDF
                       </button>
                       <button
                         onClick=${handleGenerate}
                         disabled=${!projectId || isBusy}
                         className="px-4 py-2 rounded-xl border border-sollers-graphite bg-sollers-graphite text-sollers-white disabled:opacity-50 transition-transform active:scale-[0.98]"
                       >
-                        Generate
+                        Запустить OCR
                       </button>
                     </div>
                     <button
-                      onClick=${exportReport}
+                      onClick=${exportBundle}
                       disabled=${!projectId}
                       className="w-full px-4 py-2 rounded-xl border border-sollers-blue text-sollers-blue disabled:opacity-50 transition-transform active:scale-[0.98]"
                     >
-                      Export report.json
+                      Скачать результат (.ocpkg)
                     </button>
                   </div>
                 </article>
 
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
-                  <h2 className="text-lg font-semibold">Статус</h2>
-                  <div className="mt-3 space-y-2 text-sm">
-                    <p><span className="text-sollers-gray">Состояние:</span> <span className="font-medium">${statusText}</span></p>
-                    <p><span className="text-sollers-gray">Этап:</span> <span className="font-medium">${stage}</span></p>
-                    <p><span className="text-sollers-gray">Project ID:</span> <span className="mono">${projectId || "-"}</span></p>
-                    <p><span className="text-sollers-gray">Файл:</span> <span className="mono">${filename || "-"}</span></p>
-                    <p><span className="text-sollers-gray">Версия:</span> <span className="mono">${version}</span></p>
-                    <p><span className="text-sollers-gray">OCR device (request):</span> <span className="mono">${derivedRequestedDevice}</span></p>
-                    <p><span className="text-sollers-gray">OCR device (effective):</span> <span className=${`mono ${derivedEffectiveDevice === "cuda" ? "text-sollers-green" : "text-sollers-red"}`}>${derivedEffectiveDevice}</span></p>
-                    <p><span className="text-sollers-gray">ORT CUDA available:</span> <span className=${`mono ${derivedCudaAvailable ? "text-sollers-green" : "text-sollers-red"}`}>${derivedCudaAvailable ? "yes" : "no"}</span></p>
-                    <p><span className="text-sollers-gray">Python:</span> <span className="mono">${statusPayload?.ocr_runtime?.python_executable || runtimeInfo?.python_executable || "-"}</span></p>
-                    <p>
-                      <span className="text-sollers-gray">API:</span>
-                      <span className=${`ml-2 font-medium ${connectionOk ? "text-sollers-green" : "text-sollers-red"}`}>
-                        ${connectionOk ? "online" : "offline"}
-                      </span>
-                    </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-lg font-semibold">Статус</h2>
+                    <button
+                      className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder text-sm"
+                      onClick=${() => setShowStatus((v) => !v)}
+                    >
+                      ${showStatus ? "Скрыть" : "Показать"}
+                    </button>
                   </div>
+                  ${showStatus
+                    ? html`
+                        <div className="mt-3 space-y-2 text-sm">
+                          <p><span className="text-sollers-gray">Состояние:</span> <span className="font-medium">${statusText}</span></p>
+                          <p><span className="text-sollers-gray">Этап:</span> <span className="font-medium">${stage}</span></p>
+                          <p><span className="text-sollers-gray">Файл:</span> <span className="mono">${filename || "-"}</span></p>
+                          <p>
+                            <span className="text-sollers-gray">API:</span>
+                            <span className=${`ml-2 font-medium ${connectionOk ? "text-sollers-green" : "text-sollers-red"}`}>
+                              ${connectionOk ? "online" : "offline"}
+                            </span>
+                          </p>
+                        </div>
+                      `
+                    : html`<p className="mt-2 text-sm text-sollers-gray">Скрыто (по умолчанию).</p>`}
                 </article>
               </section>
             `
           : html`
               <section className="space-y-5 min-w-0">
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
-                  <h2 className="text-lg font-semibold">Импорт отчёта (view-only)</h2>
+                  <h2 className="text-lg font-semibold">Открыть готовый результат</h2>
                   <p className="text-sm text-sollers-gray mt-2">
-                    JSON + PDF откроют быстрый viewer без OCR (только рендер страниц).
+                    Один файл содержит PDF и результат OCR+перевода.
                   </p>
                   <label className="block space-y-2 mt-4">
-                    <span className="text-sm text-sollers-gray">JSON файл отчёта</span>
+                    <span className="text-sm text-sollers-gray">Файл результата (.ocpkg)</span>
                     <input
                       type="file"
-                      accept="application/json"
+                      accept=".ocpkg,application/zip"
                       className="w-full rounded-xl border border-sollers-grayBorder p-2"
-                      onChange=${(e) => importReportFile(e.target.files?.[0] || null)}
-                    />
-                  </label>
-                  <label className="block space-y-2 mt-4">
-                    <span className="text-sm text-sollers-gray">PDF файл (для рендера страниц)</span>
-                    <input
-                      type="file"
-                      accept="application/pdf"
-                      className="w-full rounded-xl border border-sollers-grayBorder p-2"
-                      onChange=${(e) => setImportPdf(e.target.files?.[0] || null)}
+                      onChange=${(e) => setImportBundleFile(e.target.files?.[0] || null)}
                     />
                   </label>
                   <button
                     className="mt-4 w-full px-4 py-2 rounded-xl border border-sollers-orange bg-sollers-orange text-sollers-white disabled:opacity-50 transition-transform active:scale-[0.98]"
-                    disabled=${!importReport || !importPdf}
+                    disabled=${!importBundleFile || importOpenInFlight}
                     onClick=${openImportedViewer}
                   >
-                    Open viewer
+                    ${importOpenInFlight ? "Загрузка…" : "Открыть"}
                   </button>
                   ${importError
                     ? html`<p className="mt-3 text-sm text-sollers-red">${importError}</p>`
@@ -1665,20 +1676,13 @@ function App() {
         <section className="space-y-5 min-w-0">
           ${route === "workspace"
             ? html`
-                <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold">Прогресс по страницам</h2>
-                    <span className="text-sm text-sollers-gray">ETA приблизительная</span>
-                  </div>
-                  ${derivedPageIds.length === 0
-                    ? html`
-                        <div className="space-y-2">
-                          <div className="skeleton h-4 rounded"></div>
-                          <div className="skeleton h-4 rounded w-5/6"></div>
-                          <div className="skeleton h-4 rounded w-4/6"></div>
+                ${showProgress
+                  ? html`
+                      <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
+                        <div className="flex items-center justify-between mb-4">
+                          <h2 className="text-lg font-semibold">Прогресс по страницам</h2>
+                          <span className="text-sm text-sollers-gray">ETA приблизительная</span>
                         </div>
-                      `
-                    : html`
                         <div className="space-y-3">
                           ${rows.map(
                             (row) => html`
@@ -1693,7 +1697,7 @@ function App() {
                                 <div className="flex items-center justify-between gap-2 text-sm">
                                   <span className="mono">${row.pageId}</span>
                                   <span className="text-sollers-gray">
-                                    Page ETA: ${formatDuration(row.pageEta)} | OCR: ${formatDuration(row.ocrEta)}
+                                    ETA: ${formatDuration(row.pageEta)} | OCR: ${formatDuration(row.ocrEta)}
                                   </span>
                                 </div>
                                 <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -1705,32 +1709,37 @@ function App() {
                                       <div className="h-2 bg-sollers-orange rounded" style=${{ width: `${row.ocrPct}%` }}></div>
                                     </div>
                                   </div>
-                                  <div>
-                                    <div className="flex justify-between text-xs text-sollers-gray">
-                                      <span>Translate</span><span>${row.translateLabel}</span>
-                                    </div>
-                                    <div className="h-2 bg-sollers-graySoft rounded mt-1">
-                                      <div className="h-2 bg-sollers-blue rounded" style=${{ width: `${row.translatePct}%` }}></div>
-                                    </div>
-                                  </div>
+                                  ${row.translateLabel
+                                    ? html`
+                                        <div>
+                                          <div className="flex justify-between text-xs text-sollers-gray">
+                                            <span>Перевод</span><span>${row.translateLabel}</span>
+                                          </div>
+                                          <div className="h-2 bg-sollers-graySoft rounded mt-1">
+                                            <div className="h-2 bg-sollers-blue rounded" style=${{ width: `${row.translatePct}%` }}></div>
+                                          </div>
+                                        </div>
+                                      `
+                                    : null}
                                 </div>
                               </button>
                             `
                           )}
                         </div>
-                      `}
-                </article>
+                      </article>
+                    `
+                  : null}
 
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
                   <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-lg font-semibold">Viewer</h2>
+                    <h2 className="text-lg font-semibold">Просмотр</h2>
                     <div className="flex items-center gap-2">
                       <button
                         className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder disabled:opacity-50"
                         disabled=${pageIndex <= 0}
                         onClick=${() => setPageIndex((prev) => Math.max(0, prev - 1))}
                       >
-                        Prev
+                        Назад
                       </button>
                       <span className="mono text-sm">${currentPageId || "-"}</span>
                       <button
@@ -1738,7 +1747,7 @@ function App() {
                         disabled=${pageIndex >= pages.length - 1}
                         onClick=${() => setPageIndex((prev) => Math.min(pages.length - 1, prev + 1))}
                       >
-                        Next
+                        Вперёд
                       </button>
                     </div>
                   </div>

@@ -12,6 +12,8 @@ import subprocess
 import threading
 import time
 import uuid
+import zipfile
+import io
 
 from fastapi import HTTPException, UploadFile
 
@@ -52,6 +54,8 @@ class ProjectService:
         self._translate_metrics_lock = threading.Lock()
         # project_id -> {"queued": int, "active": int, "done": int, "error": int}
         self._translate_metrics: dict[str, dict[str, int]] = {}
+        self._translate_dedupe_lock = threading.Lock()
+        self._translate_dedupe_keys: set[str] = set()
         self._generate_threads: dict[str, threading.Thread] = {}
         self._generate_lock = threading.Lock()
         self._regions_lock = threading.Lock()
@@ -432,6 +436,29 @@ class ProjectService:
         text = str(region.get("text") or "").strip()
         if not text or text == "Текст не найден":
             return
+        cfg = self._translate_config()
+        src_hash = self._hash_text(text, cfg.model, lang, cfg.prompt_version, "region_draft")
+
+        # Skip enqueue if already translated with same source hash.
+        payload = self._load_regions_translation_payload(project_id, page_id, lang)
+        existing = ((payload.get("items") or {}).get(str(region.get("region_id") or "")) or {})
+        if (
+            str(existing.get("draft_source_hash") or "") == src_hash
+            and str(existing.get("status_draft") or "") == "done"
+            and str(existing.get("draft_translation") or "").strip()
+        ):
+            return
+
+        # In-memory dedupe to avoid queue storms before worker marks "running".
+        rid = str(region.get("region_id") or "").strip()
+        if not rid:
+            return
+        dedupe_key = f"{project_id}:{page_id}:{rid}:{src_hash}"
+        with self._translate_dedupe_lock:
+            if dedupe_key in self._translate_dedupe_keys:
+                return
+            self._translate_dedupe_keys.add(dedupe_key)
+
         self._ensure_translate_workers()
         self._translate_metrics_bump(project_id, queued=1)
         self._translate_queue.put(
@@ -442,6 +469,7 @@ class ProjectService:
                 "region_id": str(region.get("region_id") or ""),
                 "lang": lang,
                 "source_text": text,
+                "dedupe_key": dedupe_key,
             }
         )
 
@@ -466,6 +494,13 @@ class ProjectService:
                 return
             finished = True
             self._translate_metrics_bump(project_id, active=-1, done=done, error=error)
+            try:
+                dk = str(job.get("dedupe_key") or "").strip()
+                if dk:
+                    with self._translate_dedupe_lock:
+                        self._translate_dedupe_keys.discard(dk)
+            except Exception:
+                pass
 
         if job_type == "region_draft":
             region_id = str(job.get("region_id") or "")
@@ -532,6 +567,86 @@ class ProjectService:
         self._write_status(project_id, status)
         return status
 
+    @staticmethod
+    def _safe_stem(filename: str | None) -> str:
+        name = str(filename or "").strip() or "document"
+        # Remove path components and illegal characters for Windows.
+        name = name.replace("\\", "/").split("/")[-1]
+        for ch in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
+            name = name.replace(ch, "_")
+        if name.lower().endswith(".pdf"):
+            name = name[:-4]
+        name = name.strip().strip(".") or "document"
+        return name[:120]
+
+    def export_ocpkg_bytes(self, project_id: str) -> tuple[bytes, str]:
+        """
+        Create a single-file bundle (.ocpkg) containing:
+        - input.pdf
+        - report.json
+        """
+        project_dir = self._project_dir(project_id)
+        status = self.get_status(project_id)
+        pdf_path = project_dir / "input.pdf"
+        report_path = project_dir / "output" / "report.json"
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="Input PDF not found.")
+        if not report_path.exists():
+            raise HTTPException(status_code=404, detail="report.json not found (nothing to export yet).")
+
+        stem = self._safe_stem(str(status.get("filename") or "document.pdf"))
+        download_name = f"{stem}_ocr.ocpkg"
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("meta.json", json.dumps({"schema": "ocpkg_v1", "project_id": project_id}, ensure_ascii=False))
+            zf.write(str(pdf_path), arcname="input.pdf")
+            zf.write(str(report_path), arcname="report.json")
+        return buf.getvalue(), download_name
+
+    def import_ocpkg_and_create_project(self, upload: UploadFile) -> dict:
+        """
+        Import a .ocpkg (zip) and create a new project with input.pdf restored.
+        Returns: {project_id, filename}
+        """
+        raw = upload.file.read()
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid ocpkg: {exc}") from exc
+
+        names = set(zf.namelist())
+        if "input.pdf" not in names or "report.json" not in names:
+            raise HTTPException(status_code=400, detail="Invalid ocpkg: expected input.pdf and report.json inside.")
+
+        # Create project directory and write PDF
+        project_id = uuid.uuid4().hex[:12]
+        project_dir = self.root_dir / project_id
+        project_dir.mkdir(parents=True, exist_ok=False)
+        pdf_path = project_dir / "input.pdf"
+        with pdf_path.open("wb") as f:
+            f.write(zf.read("input.pdf"))
+
+        filename = upload.filename or "result.ocpkg"
+        status = {
+            "project_id": project_id,
+            "filename": filename,
+            "status": "uploaded",
+            "error": None,
+            "pages": 0,
+            "created_at": _utc_now(),
+            "updated_at": _utc_now(),
+        }
+        self._write_status(project_id, status)
+
+        # Return report content for enqueue/render path (caller will use it)
+        report_raw = zf.read("report.json")
+        try:
+            report = json.loads(report_raw.decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid report.json in ocpkg: {exc}") from exc
+        return {"project_id": project_id, "filename": filename, "report": report}
+
     def create_import_project_and_render_pages(
         self,
         upload: UploadFile,
@@ -548,6 +663,70 @@ class ProjectService:
         project_id = str(created["project_id"])
         project_dir = self._project_dir(project_id)
         pdf_path = project_dir / "input.pdf"
+        output_dir = project_dir / "output"
+        rendered_dir = output_dir / "rendered_pages"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        status = self.get_status(project_id)
+        status["status"] = "running"
+        status["error"] = None
+        status["stage"] = "render"
+        status["progress"] = {
+            "status": "running",
+            "indeterminate": True,
+            "current_page": 0,
+            "total_pages": 0,
+            "page_id": None,
+            "current_region": 0,
+            "total_regions": 0,
+        }
+        status["updated_at"] = _utc_now()
+        self._write_status(project_id, status)
+
+        try:
+            opts = PdfRenderOptions()
+            opts.dpi = int(dpi)
+            opts.backend = render_backend or "auto"
+            opts.poppler_path = poppler_path
+            page_paths = render_pdf_to_images(pdf_path, rendered_dir, opts)
+            status["status"] = "done"
+            status["stage"] = "render"
+            status["pages"] = int(len(page_paths))
+            status["progress"] = {
+                "status": "done",
+                "indeterminate": False,
+                "current_page": int(len(page_paths)),
+                "total_pages": int(len(page_paths)),
+                "page_id": str(page_paths[0].stem) if page_paths else None,
+                "current_region": 0,
+                "total_regions": 0,
+            }
+            status["updated_at"] = _utc_now()
+            self._write_status(project_id, status)
+            return {"project_id": project_id, "pages": [p.stem for p in page_paths]}
+        except Exception as exc:
+            status["status"] = "error"
+            status["error"] = str(exc)
+            status["updated_at"] = _utc_now()
+            self._write_status(project_id, status)
+            raise
+
+    def render_pages_for_existing_project(
+        self,
+        project_id: str,
+        *,
+        dpi: int = 400,
+        render_backend: str = "auto",
+        poppler_path: str | None = None,
+    ) -> dict:
+        """
+        Render pages for an already-created project (expects input.pdf present).
+        Used by .ocpkg import flow.
+        """
+        project_dir = self._project_dir(project_id)
+        pdf_path = project_dir / "input.pdf"
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="Input PDF not found.")
         output_dir = project_dir / "output"
         rendered_dir = output_dir / "rendered_pages"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -698,9 +877,9 @@ class ProjectService:
             # Persist full report to disk. status.json remains a lightweight snapshot for polling.
             self._write_report(project_id, report)
             status["pipeline_status"] = "done"
-            # Translation continues asynchronously after OCR/mask is done.
+            # Translation continues asynchronously (already enqueued during OCR). Keep stage at OCR until fully done.
             status["status"] = "running"
-            status["stage"] = "translate"
+            status["stage"] = "ocr"
             status["pages"] = len(report.get("pages", []))
             status["report_path"] = str((output_dir / "report.json").as_posix())
             status["ocr_profile_path"] = str((output_dir / "ocr_profile.json").as_posix())
@@ -939,10 +1118,9 @@ class ProjectService:
             if pipeline_done or stage in {"ocr", "mask"}:
                 overview = self._refresh_translation_overview(project_id, lang="ru", max_pages=overview_pages)
                 status["translation"] = overview
-                if pipeline_done and str(status.get("stage") or "") != "translate":
-                    status["stage"] = "translate"
                 if pipeline_done and str(status.get("status") or "") == "running" and str(overview.get("state") or "") == "done":
                     status["status"] = "done"
+                    status["stage"] = "done"
                     status["updated_at"] = _utc_now()
                 # Persist updated snapshot (keeps polling consistent).
                 status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")

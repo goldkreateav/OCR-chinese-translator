@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 from fastapi import Body, FastAPI, File, UploadFile, Form
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .schemas import (
@@ -92,6 +92,35 @@ def create_app(
             filename=created["filename"],
             status=created["status"],
         )
+
+    @app.get("/api/projects/{project_id}/export/ocpkg")
+    async def export_ocpkg(project_id: str) -> Response:
+        data, download_name = service.export_ocpkg_bytes(project_id)
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+        )
+
+    @app.post("/api/import/ocpkg")
+    async def import_ocpkg(file: UploadFile = File(...), dpi: int = Form(400)) -> JSONResponse:
+        """
+        One-file import: ocpkg contains input.pdf + report.json.
+        We render pages from embedded PDF and return a project_id + pages list,
+        plus the parsed report so the UI can show regions/translations immediately.
+        """
+        created = service.import_ocpkg_and_create_project(file)
+        project_id = created["project_id"]
+        report = created["report"]
+        chosen_backend = app.state.default_render_backend
+        poppler_path = app.state.default_poppler_path
+        rendered = service.render_pages_for_existing_project(
+            project_id,
+            dpi=int(dpi or 400),
+            render_backend=chosen_backend,
+            poppler_path=poppler_path,
+        )
+        return JSONResponse({"project_id": project_id, "pages": rendered.get("pages") or [], "report": report})
 
     @app.post("/api/import/projects")
     async def import_project(
