@@ -205,6 +205,7 @@ class RegionTextRecognizer:
             if self._paddle_bridge is None and not config.allow_fallback:
                 raise RuntimeError(self._init_error)
             return
+        use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
         ctor_options = [
             dict(
                 lang=config.lang,
@@ -269,6 +270,15 @@ class RegionTextRecognizer:
             dict(lang=config.lang, enable_mkldnn=False),
             dict(lang=config.lang),
         ]
+        if use_gpu:
+            # Try GPU-enabled constructors first. Some PaddleOCR versions/builds
+            # don't accept `use_gpu` or don't have CUDA support; we'll fall back.
+            gpu_first = []
+            for kw in ctor_options:
+                kw2 = dict(kw)
+                kw2["use_gpu"] = True
+                gpu_first.append(kw2)
+            ctor_options = gpu_first + ctor_options
         last_exc: Exception | None = None
         for kwargs in ctor_options:
             try:

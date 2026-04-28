@@ -190,6 +190,7 @@ class OrientedTextDetector:
                 # fall back to RapidOCR (or MSER as a last resort).
                 self._paddle = None
                 self._paddle_error = "paddleocr package is not importable"
+            use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
             ctor_options = [
                 # Prefer disabling all orientation/unwarp helpers to keep box coordinates
                 # in the same frame as the original rendered page.
@@ -233,6 +234,15 @@ class OrientedTextDetector:
                 dict(lang=config.paddle_lang, enable_mkldnn=False),
                 dict(lang=config.paddle_lang),
             ]
+            if use_gpu:
+                # Try GPU-enabled constructors first. Some PaddleOCR versions/builds
+                # don't accept `use_gpu` or don't have CUDA support; we'll fall back.
+                gpu_first = []
+                for kw in ctor_options:
+                    kw2 = dict(kw)
+                    kw2["use_gpu"] = True
+                    gpu_first.append(kw2)
+                ctor_options = gpu_first + ctor_options
             last_exc: Exception | None = None
             for kwargs in ctor_options:
                 try:
