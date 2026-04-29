@@ -180,23 +180,13 @@ class RegionTextRecognizer:
             if config.bridge_fallback_enabled and (config.paddle_python or os.getenv("OCR_PADDLE_PYTHON")):
                 self._paddle_bridge = _maybe_build_paddle_bridge(config)
             return
-        # If a separate Paddle environment is provided, prefer the subprocess bridge.
-        # This avoids importing PaddleOCR into the current interpreter (which may be
-        # incompatible or trigger heavyweight initialization).
-        if config.paddle_python or os.getenv("OCR_PADDLE_PYTHON"):
-            self._paddle_bridge = _maybe_build_paddle_bridge(config)
-            if self._paddle_bridge is None:
-                self._init_error = "Paddle bridge is configured but unavailable."
-            if self._paddle_bridge is None and config.allow_fallback and RapidOCR is not None:
-                self._rapid = _build_rapidocr(config.ocr_device)
-            if self._paddle_bridge is None and not config.allow_fallback:
-                raise RuntimeError(self._init_error or "Paddle bridge is unavailable in strict mode.")
-            return
         try:
             from paddleocr import PaddleOCR  # type: ignore
         except ImportError:
             PaddleOCR = None
         if PaddleOCR is None:
+            # If PaddleOCR isn't importable in this interpreter, fall back to the subprocess bridge
+            # when configured (typically a separate Python env with paddleocr installed).
             self._paddle_bridge = _maybe_build_paddle_bridge(config)
             if self._paddle_bridge is None:
                 self._init_error = "paddleocr package is not importable and bridge is unavailable."
@@ -205,6 +195,19 @@ class RegionTextRecognizer:
             if self._paddle_bridge is None and not config.allow_fallback:
                 raise RuntimeError(self._init_error)
             return
+        # PaddleOCR is available in-process. Only force the subprocess bridge if explicitly requested.
+        force_bridge = str(os.getenv("OCR_FORCE_PADDLE_BRIDGE", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if force_bridge and (config.paddle_python or os.getenv("OCR_PADDLE_PYTHON")):
+            self._paddle_bridge = _maybe_build_paddle_bridge(config)
+            if self._paddle_bridge is None and not config.allow_fallback:
+                raise RuntimeError("Paddle bridge is forced but unavailable.")
+            if self._paddle_bridge is not None:
+                return
         use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
         if use_gpu:
             # Some PaddleOCR versions don't accept `use_gpu` kwarg. Prefer setting
