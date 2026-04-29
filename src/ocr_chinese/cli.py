@@ -102,9 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="If GPU runs out of memory, automatically retry OCR on CPU.",
     )
     web_cmd.add_argument(
-        "--ocr-auto-select-gpu",
+        "--no-ocr-auto-select-gpu",
         action="store_true",
-        help="Auto-pick the GPU with most free VRAM (requires nvidia-smi).",
+        help="Disable auto GPU selection by free VRAM (use default CUDA device).",
     )
     web_cmd.add_argument(
         "--ocr-min-free-vram-mb",
@@ -187,7 +187,7 @@ def main() -> None:
             default_ocr_workers=args.ocr_workers,
             default_ocr_device=args.ocr_device,
             default_ocr_fallback_to_cpu_on_oom=bool(args.ocr_fallback_cpu_on_oom),
-            default_ocr_auto_select_gpu=bool(args.ocr_auto_select_gpu),
+            default_ocr_auto_select_gpu=not bool(args.no_ocr_auto_select_gpu),
             default_ocr_min_free_vram_mb=int(args.ocr_min_free_vram_mb or 1024),
             allow_fallback=args.allow_fallback,
         )
