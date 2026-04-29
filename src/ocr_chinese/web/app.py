@@ -26,6 +26,8 @@ def create_app(
     default_ocr_workers: int = 1,
     default_ocr_device: str = "cpu",
     default_ocr_fallback_to_cpu_on_oom: bool = False,
+    default_ocr_auto_select_gpu: bool = True,
+    default_ocr_min_free_vram_mb: int = 1024,
     allow_fallback: bool = False,
 ) -> FastAPI:
     package_dir = Path(__file__).resolve().parent
@@ -40,6 +42,8 @@ def create_app(
     app.state.default_ocr_workers = default_ocr_workers
     app.state.default_ocr_device = default_ocr_device
     app.state.default_ocr_fallback_to_cpu_on_oom = bool(default_ocr_fallback_to_cpu_on_oom)
+    app.state.default_ocr_auto_select_gpu = bool(default_ocr_auto_select_gpu)
+    app.state.default_ocr_min_free_vram_mb = int(default_ocr_min_free_vram_mb or 1024)
     app.state.allow_fallback = bool(allow_fallback)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -74,6 +78,8 @@ def create_app(
                 "bridge_python": os.getenv("OCR_PADDLE_PYTHON"),
                 "default_ocr_device": app.state.default_ocr_device,
                 "default_ocr_fallback_to_cpu_on_oom": bool(app.state.default_ocr_fallback_to_cpu_on_oom),
+                "default_ocr_auto_select_gpu": bool(app.state.default_ocr_auto_select_gpu),
+                "default_ocr_min_free_vram_mb": int(app.state.default_ocr_min_free_vram_mb),
                 "allow_fallback": bool(app.state.allow_fallback),
                 "web_enable_retry_ocr": bool(enable_retry_ocr),
                 **paddle_device_probe,
@@ -164,6 +170,8 @@ def create_app(
         )
         ocr_device = request.ocr_device or app.state.default_ocr_device
         ocr_fallback = app.state.default_ocr_fallback_to_cpu_on_oom
+        ocr_auto_select_gpu = app.state.default_ocr_auto_select_gpu
+        ocr_min_free_vram_mb = app.state.default_ocr_min_free_vram_mb
         options = GenerateOptions(
             dpi=request.dpi,
             render_backend=render_backend,
@@ -172,6 +180,8 @@ def create_app(
             ocr_workers=ocr_workers,
             ocr_device=ocr_device,
             ocr_fallback_to_cpu_on_oom=bool(ocr_fallback),
+            ocr_auto_select_gpu=bool(ocr_auto_select_gpu),
+            ocr_min_free_vram_mb=int(ocr_min_free_vram_mb or 1024),
             allow_fallback=bool(app.state.allow_fallback),
         )
         payload = service.start_generate_background(project_id, options)

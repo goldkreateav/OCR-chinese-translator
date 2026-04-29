@@ -102,6 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="If GPU runs out of memory, automatically retry OCR on CPU.",
     )
     web_cmd.add_argument(
+        "--ocr-auto-select-gpu",
+        action="store_true",
+        help="Auto-pick the GPU with most free VRAM (requires nvidia-smi).",
+    )
+    web_cmd.add_argument(
+        "--ocr-min-free-vram-mb",
+        type=int,
+        default=1024,
+        help="Minimum free VRAM (MB) required to try a GPU (auto-select mode).",
+    )
+    web_cmd.add_argument(
         "--allow-fallback",
         action="store_true",
         help=(
@@ -176,6 +187,8 @@ def main() -> None:
             default_ocr_workers=args.ocr_workers,
             default_ocr_device=args.ocr_device,
             default_ocr_fallback_to_cpu_on_oom=bool(args.ocr_fallback_cpu_on_oom),
+            default_ocr_auto_select_gpu=bool(args.ocr_auto_select_gpu),
+            default_ocr_min_free_vram_mb=int(args.ocr_min_free_vram_mb or 1024),
             allow_fallback=args.allow_fallback,
         )
         uvicorn.run(app, host=args.host, port=args.port)

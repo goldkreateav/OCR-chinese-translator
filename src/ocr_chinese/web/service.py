@@ -82,6 +82,8 @@ class GenerateOptions:
     ocr_workers: int | None = None
     ocr_device: str = "cpu"
     ocr_fallback_to_cpu_on_oom: bool = False
+    ocr_auto_select_gpu: bool = True
+    ocr_min_free_vram_mb: int = 1024
     allow_fallback: bool = False
 
 
@@ -841,132 +843,192 @@ class ProjectService:
             except Exception:
                 pass
 
+        def _is_oom_error(text: str) -> bool:
+            return (
+                "ResourceExhaustedError" in text
+                or "Out of memory" in text
+                or "CUDA out of memory" in text
+                or "Cannot allocate" in text
+            )
+
+        def _query_gpus_free_vram_mb() -> list[dict]:
+            """
+            Returns list like: [{"index": 0, "free_mb": 12345}, ...] sorted by free_mb desc.
+            Uses nvidia-smi when available. Safe to call on CPU-only hosts.
+            """
+            try:
+                proc = subprocess.run(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=index,memory.free",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=3.0,
+                )
+            except Exception:
+                return []
+            if proc.returncode != 0:
+                return []
+            rows: list[dict] = []
+            for line in (proc.stdout or "").splitlines():
+                s = line.strip()
+                if not s:
+                    continue
+                parts = [p.strip() for p in s.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    idx = int(parts[0])
+                    free_mb = int(float(parts[1]))
+                except Exception:
+                    continue
+                rows.append({"index": idx, "free_mb": free_mb})
+            rows.sort(key=lambda r: int(r.get("free_mb", 0)), reverse=True)
+            return rows
+
         paddle_probe = self._probe_paddle_device_runtime()
         cuda_ok = bool(paddle_probe.get("paddle_cuda_available"))
-        effective_device = "cuda" if requested_device == "cuda" and cuda_ok else "cpu"
-        status["paddle_runtime"] = {
-            "requested_device": requested_device,
-            "effective_device": effective_device,
-            "fallback_to_cpu_on_oom": bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False)),
-            **paddle_probe,
-        }
+        # Build ordered attempt list.
+        gpu_candidates: list[dict] = []
+        min_free = int(getattr(options, "ocr_min_free_vram_mb", 1024) or 1024)
+        fallback_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False))
+        if requested_device == "cuda" and cuda_ok and bool(getattr(options, "ocr_auto_select_gpu", True)):
+            gpu_candidates = _query_gpus_free_vram_mb()
+        gpu_attempts: list[tuple[str, int | None, dict | None]] = []
+        for cand in gpu_candidates:
+            idx = int(cand.get("index"))
+            free_mb = int(cand.get("free_mb", 0))
+            if free_mb < min_free:
+                continue
+            gpu_attempts.append((f"gpu:{idx}", idx, cand))
+        # If nothing meets the threshold but we do have GPUs, try the best one.
+        if not gpu_attempts and gpu_candidates:
+            best = gpu_candidates[0]
+            idx = int(best.get("index"))
+            gpu_attempts.append((f"gpu:{idx}", idx, best))
+
+        attempts: list[tuple[str, str, int | None, dict | None]] = []
+        # (effective_device, paddle_device, selected_gpu_index, gpu_meta)
+        if requested_device == "cuda" and cuda_ok:
+            for dev, idx, meta in gpu_attempts:
+                attempts.append(("cuda", dev, idx, meta))
+            # If no GPU attempt is possible, fall back to CPU.
+            if not attempts:
+                attempts.append(("cpu", "cpu", None, None))
+            elif fallback_enabled:
+                # If GPU attempts fail with OOM, allow final CPU retry.
+                attempts.append(("cpu", "cpu", None, None))
+        else:
+            attempts.append(("cpu", "cpu", None, None))
+
+        last_exc: Exception | None = None
+        for attempt_i, (eff, paddle_dev, gpu_idx, gpu_meta) in enumerate(attempts):
+            status["paddle_runtime"] = {
+                "requested_device": requested_device,
+                "effective_device": eff,
+                "fallback_to_cpu_on_oom": bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False)),
+                "auto_select_gpu": bool(getattr(options, "ocr_auto_select_gpu", True)),
+                "min_free_vram_mb": min_free,
+                "selected_gpu_index": gpu_idx,
+                "gpu_selected_free_mb": int(gpu_meta.get("free_mb")) if isinstance(gpu_meta, dict) else None,
+                "gpu_candidates": gpu_candidates[:8],
+                "attempt_index": int(attempt_i),
+                "attempt_total": int(len(attempts)),
+                **paddle_probe,
+            }
+            status["updated_at"] = _utc_now()
+            self._write_status(project_id, status)
+
+            try:
+                _set_paddle_device(paddle_dev)
+                config = PipelineConfig(dpi=options.dpi)
+                config.render.backend = options.render_backend
+                config.render.poppler_path = options.poppler_path
+                config.detector.ocr_device = (options.ocr_device or "cpu").strip().lower()
+                config.detector.allow_fallback = bool(options.allow_fallback)
+                self._tune_pipeline_config(config, options)
+                rec_cfg = self._build_recognition_config(options)
+
+                # Validate init upfront so failures are reported immediately.
+                OrientedTextDetector(config.detector)
+                RegionTextRecognizer(rec_cfg)
+
+                def on_progress(update: dict) -> None:
+                    status_inner = self.get_status(project_id)
+                    status_inner["stage"] = update.get("stage", "ocr")
+                    status_inner["progress"] = {
+                        "current_page": int(update.get("current_page", 0)),
+                        "total_pages": int(update.get("total_pages", 0)),
+                        "page_id": update.get("page_id"),
+                        "status": update.get("status"),
+                        "current_region": int(update.get("current_region", 0) or 0),
+                        "total_regions": int(update.get("total_regions", 0) or 0),
+                    }
+                    page_id = update.get("page_id")
+                    if page_id:
+                        pages_map = status_inner.get("progress_pages") or {}
+                        try:
+                            cur_r = int(update.get("current_region", 0) or 0)
+                            tot_r = int(update.get("total_regions", 0) or 0)
+                        except Exception:
+                            cur_r, tot_r = 0, 0
+                        percent = None
+                        if tot_r > 0:
+                            raw_pct = int(round((float(cur_r) * 100.0) / float(max(1, tot_r))))
+                            percent = max(0, min(100, raw_pct))
+                        pages_map[str(page_id)] = {
+                            "percent": percent,
+                            "current_region": cur_r,
+                            "total_regions": tot_r,
+                            "status": str(update.get("status") or ""),
+                            "current_page": int(update.get("current_page", 0) or 0),
+                            "total_pages": int(update.get("total_pages", 0) or 0),
+                        }
+                        status_inner["progress_pages"] = pages_map
+                    status_inner["updated_at"] = _utc_now()
+                    self._write_status(project_id, status_inner)
+
+                report = run_mask_pipeline_with_regions(
+                    pdf_path=pdf_path,
+                    output_dir=output_dir,
+                    config=config,
+                    recognition_config=rec_cfg,
+                    progress_callback=on_progress,
+                    region_ready_callback=lambda page_id, rec: (
+                        self._upsert_page_region(project_id, str(page_id), rec),
+                        self.enqueue_region_draft(project_id, str(page_id), rec, lang="ru"),
+                    ),
+                    page_done_callback=None,
+                )
+                self._write_report(project_id, report)
+                status["pipeline_status"] = "done"
+                status["status"] = "running"
+                status["stage"] = "ocr"
+                status["pages"] = len(report.get("pages", []))
+                status["report_path"] = str((output_dir / "report.json").as_posix())
+                status["ocr_profile_path"] = str((output_dir / "ocr_profile.json").as_posix())
+                status["updated_at"] = _utc_now()
+                status["translation"] = self._refresh_translation_overview(project_id, lang="ru")
+                self._write_status(project_id, status)
+                return {"status": status, "report": report}
+            except Exception as exc:
+                last_exc = exc
+                err_text = str(exc)
+                if eff == "cuda" and _is_oom_error(err_text):
+                    # Try next GPU or CPU (if present in attempts list).
+                    continue
+                break
+
+        # If we got here, all attempts failed or a non-retryable error happened.
+        final_exc = last_exc or RuntimeError("Generation failed.")
+        status["status"] = "error"
+        status["error"] = str(final_exc)
         status["updated_at"] = _utc_now()
         self._write_status(project_id, status)
-
-        try:
-            # Ensure Paddle uses the effective device before initializing OCR models.
-            _set_paddle_device("gpu" if effective_device == "cuda" else "cpu")
-            config = PipelineConfig(dpi=options.dpi)
-            config.render.backend = options.render_backend
-            config.render.poppler_path = options.poppler_path
-            config.detector.ocr_device = (options.ocr_device or "cpu").strip().lower()
-            config.detector.allow_fallback = bool(options.allow_fallback)
-            self._tune_pipeline_config(config, options)
-            rec_cfg = self._build_recognition_config(options)
-
-            # Strict Paddle-only mode validates detector/recognizer init upfront so
-            # failures are reported immediately in web status.
-            OrientedTextDetector(config.detector)
-            RegionTextRecognizer(rec_cfg)
-
-            def on_progress(update: dict) -> None:
-                status_inner = self.get_status(project_id)
-                status_inner["stage"] = update.get("stage", "ocr")
-                status_inner["progress"] = {
-                    "current_page": int(update.get("current_page", 0)),
-                    "total_pages": int(update.get("total_pages", 0)),
-                    "page_id": update.get("page_id"),
-                    "status": update.get("status"),
-                    "current_region": int(update.get("current_region", 0) or 0),
-                    "total_regions": int(update.get("total_regions", 0) or 0),
-                }
-                # Per-page progress map for UI (page_id -> {percent, current_region, total_regions, status})
-                page_id = update.get("page_id")
-                if page_id:
-                    pages_map = status_inner.get("progress_pages") or {}
-                    try:
-                        cur_r = int(update.get("current_region", 0) or 0)
-                        tot_r = int(update.get("total_regions", 0) or 0)
-                    except Exception:
-                        cur_r, tot_r = 0, 0
-                    percent = None
-                    if tot_r > 0:
-                        raw_pct = int(round((float(cur_r) * 100.0) / float(max(1, tot_r))))
-                        percent = max(0, min(100, raw_pct))
-                    pages_map[str(page_id)] = {
-                        "percent": percent,
-                        "current_region": cur_r,
-                        "total_regions": tot_r,
-                        "status": str(update.get("status") or ""),
-                        "current_page": int(update.get("current_page", 0) or 0),
-                        "total_pages": int(update.get("total_pages", 0) or 0),
-                    }
-                    status_inner["progress_pages"] = pages_map
-                status_inner["updated_at"] = _utc_now()
-                self._write_status(project_id, status_inner)
-
-            report = run_mask_pipeline_with_regions(
-                pdf_path=pdf_path,
-                output_dir=output_dir,
-                config=config,
-                recognition_config=rec_cfg,
-                progress_callback=on_progress,
-                region_ready_callback=lambda page_id, rec: (
-                    self._upsert_page_region(project_id, str(page_id), rec),
-                    self.enqueue_region_draft(project_id, str(page_id), rec, lang="ru"),
-                ),
-                page_done_callback=None,
-            )
-            # Persist full report to disk. status.json remains a lightweight snapshot for polling.
-            self._write_report(project_id, report)
-            status["pipeline_status"] = "done"
-            # Translation continues asynchronously (already enqueued during OCR). Keep stage at OCR until fully done.
-            status["status"] = "running"
-            status["stage"] = "ocr"
-            status["pages"] = len(report.get("pages", []))
-            status["report_path"] = str((output_dir / "report.json").as_posix())
-            status["ocr_profile_path"] = str((output_dir / "ocr_profile.json").as_posix())
-            status["updated_at"] = _utc_now()
-            status["translation"] = self._refresh_translation_overview(project_id, lang="ru")
-            self._write_status(project_id, status)
-            return {"status": status, "report": report}
-        except Exception as exc:
-            # Optional safety: if GPU OOM happens, re-run once on CPU.
-            fallback_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False))
-            err_text = str(exc)
-            oom_like = (
-                "ResourceExhaustedError" in err_text
-                or "Out of memory" in err_text
-                or "CUDA out of memory" in err_text
-            )
-            if fallback_enabled and requested_device == "cuda" and oom_like:
-                try:
-                    status = self.get_status(project_id)
-                except Exception:
-                    status = {"project_id": project_id}
-                status["status"] = "running"
-                status["error"] = None
-                status["stage"] = "mask"
-                status["paddle_runtime"] = {
-                    **(status.get("paddle_runtime") or {}),
-                    "requested_device": requested_device,
-                    "effective_device": "cpu",
-                    "fallback_reason": "gpu_oom",
-                    "fallback_error": err_text[:1400],
-                }
-                status["updated_at"] = _utc_now()
-                self._write_status(project_id, status)
-
-                # Re-run on CPU
-                _set_paddle_device("cpu")
-                options_cpu = GenerateOptions(**{**options.__dict__, "ocr_device": "cpu"})
-                return self.generate(project_id, options_cpu)
-
-            status["status"] = "error"
-            status["error"] = str(exc)
-            status["updated_at"] = _utc_now()
-            self._write_status(project_id, status)
-            raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Generation failed: {final_exc}") from final_exc
 
     def start_generate_background(self, project_id: str, options: GenerateOptions) -> dict:
         """
