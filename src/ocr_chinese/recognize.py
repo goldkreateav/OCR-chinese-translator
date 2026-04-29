@@ -1208,6 +1208,27 @@ def _parse_recognition_result(result: Any) -> tuple[str, float]:
         nonlocal best_text, best_score
         # PaddleX / PaddleOCR 3.x sometimes returns dict/object-like items.
         if isinstance(item, dict):
+            # PaddleOCR 3.5 pipelines often return dict with rec_texts/rec_scores arrays.
+            try:
+                rec_texts = item.get("rec_texts")
+                rec_scores = item.get("rec_scores")
+                if isinstance(rec_texts, list) and rec_texts:
+                    scores: list[float] = []
+                    if isinstance(rec_scores, list) and len(rec_scores) == len(rec_texts):
+                        for s in rec_scores:
+                            try:
+                                scores.append(float(s))
+                            except Exception:
+                                scores.append(0.0)
+                    else:
+                        scores = [0.0 for _ in rec_texts]
+                    for t, s in zip(rec_texts, scores):
+                        text_candidate = str(t or "").strip()
+                        if s > best_score and text_candidate:
+                            best_text, best_score = text_candidate, float(s)
+            except Exception:
+                pass
+
             text = str(item.get("text") or item.get("rec_text") or item.get("label") or "").strip()
             score_raw = item.get("score")
             if score_raw is None:

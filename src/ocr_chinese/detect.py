@@ -298,6 +298,8 @@ class OrientedTextDetector:
                     # PaddleOCR 3.x may reject cls/det/rec kwargs and route to predict().
                     result = self._paddle.ocr(image_input) or []
                 except Exception:
+                    # PaddleOCR 3.5+: `.ocr()` is a thin wrapper over `.predict()`
+                    # and no longer accepts det/rec kwargs. Fall back explicitly.
                     if hasattr(self._paddle, "predict"):
                         predicted = self._paddle.predict(image_input)
                         try:
