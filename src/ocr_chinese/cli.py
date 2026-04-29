@@ -97,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="OCR inference device for RapidOCR backends.",
     )
     web_cmd.add_argument(
+        "--ocr-fallback-cpu-on-oom",
+        action="store_true",
+        help="If GPU runs out of memory, automatically retry OCR on CPU.",
+    )
+    web_cmd.add_argument(
         "--allow-fallback",
         action="store_true",
         help=(
@@ -170,6 +175,7 @@ def main() -> None:
             default_ocr_mode=args.ocr_mode,
             default_ocr_workers=args.ocr_workers,
             default_ocr_device=args.ocr_device,
+            default_ocr_fallback_to_cpu_on_oom=bool(args.ocr_fallback_cpu_on_oom),
             allow_fallback=args.allow_fallback,
         )
         uvicorn.run(app, host=args.host, port=args.port)

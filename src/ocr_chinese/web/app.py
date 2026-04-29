@@ -25,6 +25,7 @@ def create_app(
     default_ocr_mode: str = "eco",
     default_ocr_workers: int = 1,
     default_ocr_device: str = "cpu",
+    default_ocr_fallback_to_cpu_on_oom: bool = False,
     allow_fallback: bool = False,
 ) -> FastAPI:
     package_dir = Path(__file__).resolve().parent
@@ -38,6 +39,7 @@ def create_app(
     app.state.default_ocr_mode = default_ocr_mode
     app.state.default_ocr_workers = default_ocr_workers
     app.state.default_ocr_device = default_ocr_device
+    app.state.default_ocr_fallback_to_cpu_on_oom = bool(default_ocr_fallback_to_cpu_on_oom)
     app.state.allow_fallback = bool(allow_fallback)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -71,6 +73,7 @@ def create_app(
                 "quality_bridge_enabled": bool(os.getenv("OCR_PADDLE_PYTHON")),
                 "bridge_python": os.getenv("OCR_PADDLE_PYTHON"),
                 "default_ocr_device": app.state.default_ocr_device,
+                "default_ocr_fallback_to_cpu_on_oom": bool(app.state.default_ocr_fallback_to_cpu_on_oom),
                 "allow_fallback": bool(app.state.allow_fallback),
                 "web_enable_retry_ocr": bool(enable_retry_ocr),
                 **paddle_device_probe,
@@ -160,6 +163,7 @@ def create_app(
             else app.state.default_ocr_workers
         )
         ocr_device = request.ocr_device or app.state.default_ocr_device
+        ocr_fallback = app.state.default_ocr_fallback_to_cpu_on_oom
         options = GenerateOptions(
             dpi=request.dpi,
             render_backend=render_backend,
@@ -167,6 +171,7 @@ def create_app(
             ocr_mode=ocr_mode,
             ocr_workers=ocr_workers,
             ocr_device=ocr_device,
+            ocr_fallback_to_cpu_on_oom=bool(ocr_fallback),
             allow_fallback=bool(app.state.allow_fallback),
         )
         payload = service.start_generate_background(project_id, options)

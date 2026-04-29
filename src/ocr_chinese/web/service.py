@@ -81,6 +81,7 @@ class GenerateOptions:
     ocr_mode: str = "eco"
     ocr_workers: int | None = None
     ocr_device: str = "cpu"
+    ocr_fallback_to_cpu_on_oom: bool = False
     allow_fallback: bool = False
 
 
@@ -832,18 +833,29 @@ class ProjectService:
         requested_device = str(options.ocr_device or "cpu").strip().lower()
         if requested_device not in {"cpu", "cuda"}:
             requested_device = "cpu"
+        def _set_paddle_device(device: str) -> None:
+            try:
+                import paddle  # type: ignore
+
+                paddle.set_device(device)
+            except Exception:
+                pass
+
         paddle_probe = self._probe_paddle_device_runtime()
         cuda_ok = bool(paddle_probe.get("paddle_cuda_available"))
         effective_device = "cuda" if requested_device == "cuda" and cuda_ok else "cpu"
         status["paddle_runtime"] = {
             "requested_device": requested_device,
             "effective_device": effective_device,
+            "fallback_to_cpu_on_oom": bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False)),
             **paddle_probe,
         }
         status["updated_at"] = _utc_now()
         self._write_status(project_id, status)
 
         try:
+            # Ensure Paddle uses the effective device before initializing OCR models.
+            _set_paddle_device("gpu" if effective_device == "cuda" else "cpu")
             config = PipelineConfig(dpi=options.dpi)
             config.render.backend = options.render_backend
             config.render.poppler_path = options.poppler_path
@@ -919,6 +931,37 @@ class ProjectService:
             self._write_status(project_id, status)
             return {"status": status, "report": report}
         except Exception as exc:
+            # Optional safety: if GPU OOM happens, re-run once on CPU.
+            fallback_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False))
+            err_text = str(exc)
+            oom_like = (
+                "ResourceExhaustedError" in err_text
+                or "Out of memory" in err_text
+                or "CUDA out of memory" in err_text
+            )
+            if fallback_enabled and requested_device == "cuda" and oom_like:
+                try:
+                    status = self.get_status(project_id)
+                except Exception:
+                    status = {"project_id": project_id}
+                status["status"] = "running"
+                status["error"] = None
+                status["stage"] = "mask"
+                status["paddle_runtime"] = {
+                    **(status.get("paddle_runtime") or {}),
+                    "requested_device": requested_device,
+                    "effective_device": "cpu",
+                    "fallback_reason": "gpu_oom",
+                    "fallback_error": err_text[:1400],
+                }
+                status["updated_at"] = _utc_now()
+                self._write_status(project_id, status)
+
+                # Re-run on CPU
+                _set_paddle_device("cpu")
+                options_cpu = GenerateOptions(**{**options.__dict__, "ocr_device": "cpu"})
+                return self.generate(project_id, options_cpu)
+
             status["status"] = "error"
             status["error"] = str(exc)
             status["updated_at"] = _utc_now()

@@ -511,7 +511,7 @@ function App() {
         setRuntimeInfo(payload || null);
         // Default to GPU when Paddle reports it's usable; otherwise CPU.
         const cudaOk = Boolean(payload?.paddle_cuda_available);
-        setOcrMode("eco");
+        setOcrMode(String(payload?.default_ocr_mode || "eco"));
         setOcrDevice(cudaOk ? "cuda" : "cpu");
       } catch (_) {
         // noop
@@ -1586,8 +1586,11 @@ function App() {
                       />
                     </label>
                     <div className="text-sm text-sollers-gray">
-                      Режим: <span className="mono">eco</span> · Устройство: 
+                      Режим: <span className="mono">${ocrMode}</span> · Устройство:
                       <span className="mono">${derivedEffectiveDevice === "cuda" ? "GPU" : "CPU"}</span>
+                      <span className="text-sollers-gray"> (request:</span>
+                      <span className="mono">${derivedRequestedDevice}</span>
+                      <span className="text-sollers-gray">)</span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
@@ -1757,7 +1760,7 @@ function App() {
                         <${PageViewer}
                           isImport=${false}
                           pageId=${currentPageId}
-                          title=${"Viewer"}
+                          title=${"Просмотр"}
                           imageUrl=${currentAssets.image_url}
                           imageAlt=${"Rendered page"}
                           imageRef=${workspaceImageRef}
@@ -1799,12 +1802,11 @@ function App() {
               `
             : html`
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5 min-w-0">
-                  <h2 className="text-lg font-semibold">Offline report viewer</h2>
+                  <h2 className="text-lg font-semibold">Просмотр результата (офлайн)</h2>
                   ${importReport && importProjectId
                     ? html`
                         <p className="text-sm text-sollers-gray mt-1">
-                          Страниц: ${importPages.length || 0} | exported at:
-                          <span className="mono">${importReport.meta?.exported_at || "-"}</span>
+                          Страниц: ${importPages.length || 0}
                         </p>
                         <div className="mt-4 space-y-3">
                           <div className="flex items-center justify-between gap-2">
@@ -1813,7 +1815,7 @@ function App() {
                               disabled=${importPageIndex <= 0}
                               onClick=${() => setImportPageIndex((p) => Math.max(0, p - 1))}
                             >
-                              Prev
+                              Назад
                             </button>
                             <span className="mono text-sm">${importPages[importPageIndex] || "-"}</span>
                             <button
@@ -1821,7 +1823,7 @@ function App() {
                               disabled=${importPageIndex >= importPages.length - 1}
                               onClick=${() => setImportPageIndex((p) => Math.min(importPages.length - 1, p + 1))}
                             >
-                              Next
+                              Вперёд
                             </button>
                           </div>
                           ${importPages.length > 0
@@ -1833,7 +1835,7 @@ function App() {
                                   <${PageViewer}
                                     isImport=${true}
                                     pageId=${pageId}
-                                    title=${"Offline viewer"}
+                                    title=${"Просмотр (офлайн)"}
                                     imageUrl=${imageUrl}
                                     imageAlt=${"Rendered page"}
                                     imageRef=${importImageRef}
@@ -1861,7 +1863,7 @@ function App() {
                             : null}
                         </div>
                       `
-                    : html`<p className="text-sm text-sollers-gray mt-2">Импортируйте report.json и PDF, затем нажмите Open viewer.</p>`}
+                    : html`<p className="text-sm text-sollers-gray mt-2">Импортируйте report.json и PDF, затем нажмите «Открыть».</p>`}
                 </article>
               `}
         </section>
@@ -1873,28 +1875,28 @@ function App() {
               <div className="w-full max-w-3xl bg-sollers-white rounded-2xl border border-sollers-grayBorder p-5">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-xl font-semibold">Region details</h3>
-                    <p className="text-sm text-sollers-gray mono">
-                      ${selectedRegion.region_id} | conf ${Number(
-                        selectedRegion.ocr_confidence ?? selectedRegion.confidence ?? 0
-                      ).toFixed(3)}
+                    <h3 className="text-xl font-semibold">Фрагмент</h3>
+                    <p className="text-sm text-sollers-gray">
+                      Уверенность: <span className="mono">${Number(selectedRegion.ocr_confidence ?? selectedRegion.confidence ?? 0).toFixed(3)}</span>
                     </p>
                   </div>
                   <button
                     className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder"
                     onClick=${() => setSelectedRegion(null)}
                   >
-                    Close
+                    Закрыть
                   </button>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                   <div className="space-y-2">
-                    <p className="text-sm text-sollers-gray">OCR text</p>
+                    <p className="text-sm text-sollers-gray">Распознанный текст</p>
                     <textarea className="w-full min-h-[220px] rounded-xl border border-sollers-grayBorder p-3" value=${selectedRegion.text || ""} readOnly></textarea>
                   </div>
                   <div className="space-y-2">
-                    <p className="text-sm text-sollers-gray">RU translation</p>
-                    <p className="text-xs mono text-sollers-gray">${regionTranslation.statusLabel}</p>
+                    <p className="text-sm text-sollers-gray">Перевод (RU)</p>
+                    ${regionTranslation.statusLabel && regionTranslation.statusLabel !== "done"
+                      ? html`<p className="text-xs mono text-sollers-gray">${regionTranslation.statusLabel}</p>`
+                      : null}
                     <textarea
                       className="w-full min-h-[220px] rounded-xl border border-sollers-grayBorder p-3"
                       value=${regionTranslation.error || regionTranslation.text || ""}
@@ -1909,7 +1911,7 @@ function App() {
                       await navigator.clipboard.writeText(selectedRegion.text || "");
                     }}
                   >
-                    Copy OCR
+                    Копировать текст
                   </button>
                   <button
                     className="px-4 py-2 rounded-xl border border-sollers-blue text-sollers-blue transition-transform active:scale-[0.98]"
@@ -1917,14 +1919,14 @@ function App() {
                       await navigator.clipboard.writeText(regionTranslation.text || "");
                     }}
                   >
-                    Copy translation
+                    Копировать перевод
                   </button>
                   <button
                     className="px-4 py-2 rounded-xl border border-sollers-orange text-sollers-orange transition-transform active:scale-[0.98]"
                     onClick=${handleRetryRegion}
                     style=${webEnableRetryOcr ? null : { display: "none" }}
                   >
-                    Retry OCR (accurate)
+                    Повторить OCR (точнее)
                   </button>
                 </div>
               </div>
