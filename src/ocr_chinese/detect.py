@@ -190,6 +190,12 @@ class OrientedTextDetector:
                 # fall back to RapidOCR (or MSER as a last resort).
                 self._paddle = None
                 self._paddle_error = "paddleocr package is not importable"
+                # IMPORTANT: do not attempt to call PaddleOCR() when it's unavailable.
+                # We'll either fall back (if allow_fallback) or raise a clear error later.
+                PaddleOCR = None
+                if config.allow_fallback and RapidOCR is not None:
+                    self._rapid = _build_rapidocr(config.ocr_device)
+                return
             use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
             if use_gpu:
                 # Some PaddleOCR versions don't accept `use_gpu` kwarg. Prefer

@@ -57,7 +57,7 @@ def create_app(
             v = pkg_version("ocr-chinese-masker")
         except Exception:
             v = "unknown"
-        runtime_probe = service._probe_ocr_runtime()
+        paddle_device_probe = service._probe_paddle_device_runtime()
         paddle_probe = service._probe_paddle_runtime()
         enable_retry_ocr = str(os.getenv("WEB_ENABLE_RETRY_OCR", "") or "").strip().lower() in {
             "1",
@@ -73,7 +73,7 @@ def create_app(
                 "default_ocr_device": app.state.default_ocr_device,
                 "allow_fallback": bool(app.state.allow_fallback),
                 "web_enable_retry_ocr": bool(enable_retry_ocr),
-                **runtime_probe,
+                **paddle_device_probe,
                 **paddle_probe,
             }
         )

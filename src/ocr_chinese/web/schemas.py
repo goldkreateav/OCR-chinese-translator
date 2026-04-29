@@ -34,6 +34,7 @@ class ProjectStatusResponse(BaseModel):
     progress: dict | None = None
     progress_pages: dict | None = None
     ocr_runtime: dict | None = None
+    paddle_runtime: dict | None = None
     translation: dict | None = None
     updated_at: str | None = None
 

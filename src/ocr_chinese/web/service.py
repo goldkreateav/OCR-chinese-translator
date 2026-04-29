@@ -286,48 +286,38 @@ class ProjectService:
             self._translate_threads.append(t)
 
     @staticmethod
-    def _probe_ocr_runtime() -> dict:
-        providers: list[str] = []
-        ort_error: str | None = None
-        cuda_usable = False
-        cuda_error: str | None = None
+    def _probe_paddle_device_runtime() -> dict:
+        """
+        Lightweight Paddle runtime probe:
+        - is Paddle compiled with CUDA
+        - what device Paddle reports (cpu / gpu:0)
+        """
+        paddle_error: str | None = None
+        compiled = False
+        device = "cpu"
+        version: str | None = None
         try:
-            import onnxruntime as ort  # type: ignore
+            import paddle  # type: ignore
 
-            providers = list(ort.get_available_providers() or [])
+            version = str(getattr(paddle, "__version__", None) or "unknown")
+            compiled = bool(paddle.is_compiled_with_cuda())
+            try:
+                device = str(paddle.get_device() or "cpu")
+            except Exception:
+                device = "cpu"
         except Exception as exc:
-            ort_error = str(exc)
+            paddle_error = str(exc)
+            compiled = False
+            device = "cpu"
 
-        # Some ORT builds report CUDA as "available" but fail to load CUDA DLLs
-        # at runtime. Try to actually create a CUDA session to validate.
-        try:
-            if "CUDAExecutionProvider" in providers:
-                import onnxruntime as ort  # type: ignore
-                from rapidocr_onnxruntime import rapid_ocr_api  # type: ignore
-                from rapidocr_onnxruntime.utils import read_yaml  # type: ignore
-                from pathlib import Path as _Path
-
-                root_dir = _Path(rapid_ocr_api.__file__).resolve().parent
-                cfg_path = root_dir / "config.yaml"
-                cfg = read_yaml(str(cfg_path))
-                det_rel = str(((cfg.get("Det") or {}).get("model_path") or "")).strip()
-                model_path = root_dir / det_rel if det_rel else None
-                if model_path is not None and model_path.exists():
-                    sess = ort.InferenceSession(
-                        str(model_path),
-                        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                    )
-                    cuda_usable = "CUDAExecutionProvider" in (sess.get_providers() or [])
-        except Exception as exc:
-            cuda_error = str(exc)
-            cuda_usable = False
-
+        cuda_usable = bool(compiled and str(device).lower().startswith("gpu"))
         return {
             "python_executable": sys.executable,
-            "ort_available_providers": providers,
-            "ort_cuda_available": bool(cuda_usable),
-            "ort_probe_error": ort_error,
-            "ort_cuda_error": cuda_error,
+            "paddle_version": version,
+            "paddle_is_compiled_with_cuda": bool(compiled),
+            "paddle_device": device,
+            "paddle_cuda_available": bool(cuda_usable),
+            "paddle_error": paddle_error,
         }
 
     def _translate_worker_loop(self) -> None:
@@ -842,16 +832,13 @@ class ProjectService:
         requested_device = str(options.ocr_device or "cpu").strip().lower()
         if requested_device not in {"cpu", "cuda"}:
             requested_device = "cpu"
-        runtime_probe = self._probe_ocr_runtime()
-        effective_device = (
-            "cuda"
-            if requested_device == "cuda" and bool(runtime_probe.get("ort_cuda_available"))
-            else "cpu"
-        )
-        status["ocr_runtime"] = {
+        paddle_probe = self._probe_paddle_device_runtime()
+        cuda_ok = bool(paddle_probe.get("paddle_cuda_available"))
+        effective_device = "cuda" if requested_device == "cuda" and cuda_ok else "cpu"
+        status["paddle_runtime"] = {
             "requested_device": requested_device,
             "effective_device": effective_device,
-            **runtime_probe,
+            **paddle_probe,
         }
         status["updated_at"] = _utc_now()
         self._write_status(project_id, status)

@@ -509,8 +509,8 @@ function App() {
         const bridge = payload.quality_bridge_enabled ? "bridge:on" : "bridge:off";
         setVersion(`${appVer} (${bridge})`);
         setRuntimeInfo(payload || null);
-        // Default to GPU when available; otherwise CPU. Backend still auto-falls back.
-        const cudaOk = Boolean(payload?.ort_cuda_available);
+        // Default to GPU when Paddle reports it's usable; otherwise CPU.
+        const cudaOk = Boolean(payload?.paddle_cuda_available);
         setOcrMode("eco");
         setOcrDevice(cudaOk ? "cuda" : "cpu");
       } catch (_) {
@@ -520,12 +520,12 @@ function App() {
   }, []);
 
   const derivedRequestedDevice =
-    String(statusPayload?.ocr_runtime?.requested_device || ocrDevice || "cpu").toLowerCase() === "cuda" ? "cuda" : "cpu";
+    String(statusPayload?.paddle_runtime?.requested_device || ocrDevice || "cpu").toLowerCase() === "cuda" ? "cuda" : "cpu";
   const derivedCudaAvailable = Boolean(
-    statusPayload?.ocr_runtime?.ort_cuda_available ?? runtimeInfo?.ort_cuda_available
+    statusPayload?.paddle_runtime?.paddle_cuda_available ?? runtimeInfo?.paddle_cuda_available
   );
-  const derivedEffectiveDevice = statusPayload?.ocr_runtime?.effective_device
-    ? String(statusPayload.ocr_runtime.effective_device)
+  const derivedEffectiveDevice = statusPayload?.paddle_runtime?.effective_device
+    ? String(statusPayload.paddle_runtime.effective_device)
     : derivedRequestedDevice === "cuda" && derivedCudaAvailable
       ? "cuda"
       : "cpu";
@@ -1587,7 +1587,7 @@ function App() {
                     </label>
                     <div className="text-sm text-sollers-gray">
                       Режим: <span className="mono">eco</span> · Устройство: 
-                      <span className="mono">${derivedCudaAvailable ? "GPU (если доступно)" : "CPU"}</span>
+                      <span className="mono">${derivedEffectiveDevice === "cuda" ? "GPU" : "CPU"}</span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
