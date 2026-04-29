@@ -1162,6 +1162,17 @@ class ProjectService:
         try:
             stage = str(status.get("stage") or "").lower()
             pipeline_done = str(status.get("pipeline_status") or "") == "done"
+            # Backward/upgrade compatibility: older status.json files won't have paddle_runtime.
+            # Fill it lazily so the UI can reliably show CPU/GPU.
+            if status.get("paddle_runtime") is None:
+                probe = self._probe_paddle_device_runtime()
+                cuda_ok = bool(probe.get("paddle_cuda_available"))
+                requested = "cuda" if cuda_ok else "cpu"
+                status["paddle_runtime"] = {
+                    "requested_device": requested,
+                    "effective_device": "cuda" if requested == "cuda" and cuda_ok else "cpu",
+                    **probe,
+                }
             # During OCR/mask we only scan a small set of pages to keep /status cheap,
             # but still expose queue metrics so the UI can show parallel translation activity.
             overview_pages = 250 if pipeline_done else 8
