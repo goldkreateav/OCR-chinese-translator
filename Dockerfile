@@ -24,13 +24,12 @@ COPY src /app/src
 
 RUN python3 -m pip install -U pip wheel setuptools \
     && python3 -m pip install -e . \
-    && python3 -m pip install -e ".[rapidocr]" \
-    && python3 -m pip install onnxruntime-gpu
+    && python3 -m pip install -e ".[detector]"
 
 ENV MASKPDF_DATA_ROOT=/data
 RUN mkdir -p /data
 
 EXPOSE 54172
 
-CMD ["maskpdf", "web", "--host", "0.0.0.0", "--port", "54172", "--data-root", "/data", "--allow-fallback", "--ocr-device", "cuda", "--ocr-fallback-cpu-on-oom"]
+CMD ["maskpdf", "web", "--host", "0.0.0.0", "--port", "54172", "--data-root", "/data", "--ocr-device", "cuda", "--ocr-fallback-cpu-on-oom"]
 
