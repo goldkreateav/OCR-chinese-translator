@@ -123,9 +123,16 @@ def create_app(
         report = created["report"]
         chosen_backend = app.state.default_render_backend
         poppler_path = app.state.default_poppler_path
+        report_dpi = None
+        try:
+            meta = (report or {}).get("meta") or {}
+            report_dpi = int(meta.get("dpi")) if meta.get("dpi") is not None else None
+        except Exception:
+            report_dpi = None
+        dpi_to_render = report_dpi if (isinstance(report_dpi, int) and report_dpi > 0) else int(dpi or 400)
         rendered = service.render_pages_for_existing_project(
             project_id,
-            dpi=int(dpi or 400),
+            dpi=int(dpi_to_render),
             render_backend=chosen_backend,
             poppler_path=poppler_path,
         )

@@ -628,17 +628,88 @@ class ProjectService:
         report_path = project_dir / "output" / "report.json"
         if not pdf_path.exists():
             raise HTTPException(status_code=404, detail="Input PDF not found.")
-        if not report_path.exists():
-            raise HTTPException(status_code=404, detail="report.json not found (nothing to export yet).")
 
         stem = self._safe_stem(str(status.get("filename") or "document.pdf"))
         download_name = f"{stem}_ocr.ocpkg"
+
+        def _infer_report_dpi() -> int | None:
+            """
+            Try to infer the DPI that the OCR pipeline used to render pages.
+            This must match the DPI used during offline import rendering, otherwise
+            polygons (region coordinates) won't align with the page image.
+            """
+            if not report_path.exists():
+                return None
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+            cfg = (payload or {}).get("config") or {}
+            render = (cfg or {}).get("render") or {}
+            for v in (render.get("dpi"), cfg.get("dpi")):
+                try:
+                    n = int(v)
+                    if 50 <= n <= 2000:
+                        return n
+                except Exception:
+                    continue
+            return None
+
+        inferred_dpi = _infer_report_dpi()
+
+        # The web import flow expects a report with:
+        # - pages: [{page_id, ...}]
+        # - regionsByPage: { [page_id]: [region, ...] }
+        # Our on-disk `output/report.json` is a metrics/profiling report, so for exports we
+        # build an import-friendly structure from `output/regions/*_regions.json` when present.
+        output_dir = project_dir / "output"
+        regions_dir = output_dir / "regions"
+        export_report: dict | None = None
+        try:
+            if regions_dir.exists():
+                region_files = sorted(regions_dir.glob("*_regions.json"))
+                if region_files:
+                    pages: list[dict] = []
+                    regions_by_page: dict[str, list] = {}
+                    for rf in region_files:
+                        try:
+                            payload = json.loads(rf.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        page_id = str((payload or {}).get("page_id") or "").strip()
+                        regions = (payload or {}).get("regions") or []
+                        if not page_id or not isinstance(regions, list):
+                            continue
+                        pages.append({"page_id": page_id})
+                        regions_by_page[page_id] = regions
+                    if pages and regions_by_page:
+                        # Keep shape compatible with frontend offline report export.
+                        export_report = {
+                            "meta": {
+                                "schema_version": "1.0.0",
+                                "exported_at": _utc_now(),
+                                "project_id": project_id,
+                                "filename": str(status.get("filename") or "") or None,
+                                "dpi": inferred_dpi,
+                            },
+                            "pages": pages,
+                            "regionsByPage": regions_by_page,
+                            "translationsByPage": {},
+                        }
+        except Exception:
+            export_report = None
+
+        if export_report is None and not report_path.exists():
+            raise HTTPException(status_code=404, detail="Nothing to export yet (no regions/report.json found).")
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("meta.json", json.dumps({"schema": "ocpkg_v1", "project_id": project_id}, ensure_ascii=False))
             zf.write(str(pdf_path), arcname="input.pdf")
-            zf.write(str(report_path), arcname="report.json")
+            if export_report is not None:
+                zf.writestr("report.json", json.dumps(export_report, ensure_ascii=False, indent=2))
+            else:
+                zf.write(str(report_path), arcname="report.json")
         return buf.getvalue(), download_name
 
     def import_ocpkg_and_create_project(self, upload: UploadFile) -> dict:
