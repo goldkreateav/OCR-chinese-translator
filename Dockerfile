@@ -4,7 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 \
@@ -23,7 +25,7 @@ COPY pyproject.toml README.md /app/
 COPY src /app/src
 
 RUN python3 -m pip install -U pip wheel setuptools \
-    && python3 -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/ \
+    && python3 -m pip install --timeout 120 --retries 10 paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/ \
     && python3 -m pip install -e . \
     && python3 -m pip install -e ".[detector]"
 
