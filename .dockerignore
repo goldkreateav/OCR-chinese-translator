@@ -1,0 +1,28 @@
+.git
+.github
+.venv*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# local outputs / jobs
+output*/
+web_jobs/
+debug-*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Cursor agent metadata
+.agents/
+skills-lock.json
+
+# Node / frontend tooling (not used in runtime image)
+node_modules/
+
