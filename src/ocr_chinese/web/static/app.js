@@ -14,6 +14,24 @@ const POLL_TRANSLATE_MS = 2000;
 const ETA_WARMUP_MS = 5000;
 const ETA_ALPHA = 0.32;
 
+function apiUrl(path) {
+  const p = String(path || "");
+  if (!p) return "./api";
+  if (p.startsWith("http://") || p.startsWith("https://")) return p;
+  if (p.startsWith("/api/")) return `.${p}`;
+  if (p === "/api") return "./api";
+  if (p.startsWith("api/")) return `./${p}`;
+  if (p.startsWith("/")) return `.${p}`;
+  return `./api/${p.replace(/^\.\//, "").replace(/^api\//, "").replace(/^\//, "")}`;
+}
+
+function relUrl(raw) {
+  const s = String(raw || "");
+  if (!s) return "";
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+  return s.startsWith("/") ? `.${s}` : s;
+}
+
 function routeFromPath(pathname) {
   return pathname === "/import" ? "import" : "workspace";
 }
@@ -503,7 +521,7 @@ function App() {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await fetch("/api/version");
+        const resp = await fetch(apiUrl("/version"));
         if (!resp.ok) return;
         const payload = await resp.json();
         const appVer = payload.app_version || "unknown";
@@ -544,7 +562,7 @@ function App() {
   async function fetchStatus() {
     if (!projectId) return;
     try {
-      const resp = await fetch(`/api/projects/${projectId}/status`);
+      const resp = await fetch(apiUrl(`/projects/${projectId}/status`));
       if (!resp.ok) return;
       const payload = await resp.json();
       dbg("H1", "static/app.js:fetchStatus", "Fetched status payload", {
@@ -581,7 +599,7 @@ function App() {
   }
 
   async function loadPages(pid) {
-    const resp = await fetch(`/api/projects/${pid}/pages`);
+    const resp = await fetch(apiUrl(`/projects/${pid}/pages`));
     if (!resp.ok) return;
     const payload = await resp.json();
     const list = payload.pages || [];
@@ -602,8 +620,8 @@ function App() {
       return inflight;
     }
     const url = force
-      ? `/api/projects/${pid}/pages/${pageId}/assets?force=1`
-      : `/api/projects/${pid}/pages/${pageId}/assets`;
+      ? apiUrl(`/projects/${pid}/pages/${pageId}/assets?force=1`)
+      : apiUrl(`/projects/${pid}/pages/${pageId}/assets`);
     const p = (async () => {
       const resp = await fetch(url);
       if (!resp.ok) return;
@@ -648,7 +666,7 @@ function App() {
           translationByPage[pageId]?.regions_total === translationByPage[pageId]?.draft_done + translationByPage[pageId]?.draft_error;
         if (hasFinished) continue;
         try {
-          const resp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`);
+          const resp = await fetch(apiUrl(`/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`));
           if (!resp.ok) continue;
           const payload = await resp.json();
           entries.push([pageId, payload]);
@@ -675,7 +693,7 @@ function App() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const resp = await fetch(`/api/projects/${projectId}/pages/${currentPageId}/translations?lang=ru`);
+        const resp = await fetch(apiUrl(`/projects/${projectId}/pages/${currentPageId}/translations?lang=ru`));
         if (!resp.ok) return;
         const payload = await resp.json();
         if (cancelled) return;
@@ -805,7 +823,7 @@ function App() {
     // Fallback (should be rare): do one direct fetch, no polling.
     (async () => {
       try {
-        const resp = await fetch(`/api/projects/${effectivePid}/pages/${pageId}/translations/region/${regionId}?lang=ru`);
+        const resp = await fetch(apiUrl(`/projects/${effectivePid}/pages/${pageId}/translations/region/${regionId}?lang=ru`));
         if (!resp.ok) return;
         const payload = await resp.json();
         apply(payload);
@@ -819,7 +837,7 @@ function App() {
     const fd = new FormData();
     fd.append("file", uploadFile);
     setStatusText("Uploading PDF...");
-    const resp = await fetch("/api/projects", { method: "POST", body: fd });
+    const resp = await fetch(apiUrl("/projects"), { method: "POST", body: fd });
     if (!resp.ok) {
       setStatusText("Upload failed");
       alert(await resp.text());
@@ -837,7 +855,7 @@ function App() {
   async function exportBundle() {
     if (!projectId) return;
     try {
-      const resp = await fetch(`/api/projects/${projectId}/export/ocpkg`);
+      const resp = await fetch(apiUrl(`/projects/${projectId}/export/ocpkg`));
       if (!resp.ok) {
         alert(await resp.text());
         return;
@@ -860,7 +878,7 @@ function App() {
     if (!projectId) return;
     setGenerateInFlight(true);
     setStatusText("Запуск…");
-    const resp = await fetch(`/api/projects/${projectId}/generate`, {
+    const resp = await fetch(apiUrl(`/projects/${projectId}/generate`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -886,7 +904,7 @@ function App() {
     if (cancelInFlight) return;
     setCancelInFlight(true);
     try {
-      const resp = await fetch(`/api/projects/${projectId}/cancel`, { method: "POST" });
+      const resp = await fetch(apiUrl(`/projects/${projectId}/cancel`), { method: "POST" });
       if (!resp.ok) {
         alert(await resp.text());
         return;
@@ -903,7 +921,7 @@ function App() {
 
   async function handleRetryRegion() {
     if (!projectId || !selectedRegion?.region_id || !selectedRegion?.page_id) return;
-    const resp = await fetch(`/api/projects/${projectId}/regions/${selectedRegion.region_id}/retry`, {
+    const resp = await fetch(apiUrl(`/projects/${projectId}/regions/${selectedRegion.region_id}/retry`), {
       method: "POST",
     });
     if (!resp.ok) {
@@ -950,7 +968,7 @@ function App() {
       regionsByPage: {},
       translationsByPage: {},
     };
-    const pagesResp = await fetch(`/api/projects/${projectId}/pages`);
+    const pagesResp = await fetch(apiUrl(`/projects/${projectId}/pages`));
     if (!pagesResp.ok) {
       alert("Не удалось получить список страниц.");
       return;
@@ -960,17 +978,17 @@ function App() {
     report.pages = pageIds.map((page_id) => ({ page_id }));
 
     for (const pageId of pageIds) {
-      const regionsResp = await fetch(`/api/projects/${projectId}/pages/${pageId}/regions`);
+      const regionsResp = await fetch(apiUrl(`/projects/${projectId}/pages/${pageId}/regions`));
       const regionsPayload = regionsResp.ok ? await regionsResp.json() : { regions: [] };
       const regions = regionsPayload.regions || [];
       report.regionsByPage[pageId] = regions;
 
-      const tStatusResp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`);
+      const tStatusResp = await fetch(apiUrl(`/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`));
       const tStatusPayload = tStatusResp.ok ? await tStatusResp.json() : {};
 
       let translations = {};
       try {
-        const tResp = await fetch(`/api/projects/${projectId}/pages/${pageId}/translations?lang=ru`);
+        const tResp = await fetch(apiUrl(`/projects/${projectId}/pages/${pageId}/translations?lang=ru`));
         if (tResp.ok) {
           const tPayload = await tResp.json();
           translations = tPayload?.items || {};
@@ -1000,7 +1018,7 @@ function App() {
       const fd = new FormData();
       fd.append("file", importBundleFile);
       fd.append("dpi", String(Number(dpi || 400)));
-      const resp = await fetch("/api/import/ocpkg", { method: "POST", body: fd });
+      const resp = await fetch(apiUrl("/import/ocpkg"), { method: "POST", body: fd });
       if (!resp.ok) {
         const t = await resp.text();
         setImportError(`Не удалось открыть файл: ${t}`);
@@ -1792,7 +1810,7 @@ function App() {
                           isImport=${false}
                           pageId=${currentPageId}
                           title=${"Просмотр"}
-                          imageUrl=${currentAssets.image_url}
+                          imageUrl=${relUrl(currentAssets.image_url)}
                           imageAlt=${"Rendered page"}
                           imageRef=${workspaceImageRef}
                           onImageLoad=${(e) => {
@@ -1804,7 +1822,7 @@ function App() {
                               setPageGeomById((prev) => upsertGeom(prev, currentPageId, geom));
                             } catch (_) {}
                           }}
-                          maskUrl=${`${currentAssets.mask_url}?t=${maskNonce}`}
+                          maskUrl=${relUrl(`${currentAssets.mask_url}?t=${maskNonce}`)}
                           maskOk=${maskOkByPage[currentPageId]}
                           maskStyle=${(() => {
                             const g = pageGeomById[currentPageId] || {};
@@ -1861,13 +1879,13 @@ function App() {
                             ? (() => {
                                 const pageId = importPages[importPageIndex];
                                 const assets = importAssetsByPage[pageId] || buildOfflineAssets(importReport, pageId);
-                                const imageUrl = `/api/projects/${importProjectId}/pages/${pageId}/image`;
+                                const imageUrl = apiUrl(`/projects/${importProjectId}/pages/${pageId}/image`);
                                 return html`
                                   <${PageViewer}
                                     isImport=${true}
                                     pageId=${pageId}
                                     title=${"Просмотр (офлайн)"}
-                                    imageUrl=${imageUrl}
+                                    imageUrl=${relUrl(imageUrl)}
                                     imageAlt=${"Rendered page"}
                                     imageRef=${importImageRef}
                                     onImageLoad=${(e) => {
