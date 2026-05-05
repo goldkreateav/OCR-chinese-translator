@@ -119,7 +119,32 @@ def _normalize_ocr_device(device: str | None) -> str:
     value = (device or "cpu").strip().lower()
     if value in {"cuda", "gpu"}:
         return "cuda"
+    if value.startswith("gpu:") or value.startswith("cuda:"):
+        tail = value.split(":", 1)[-1].strip()
+        try:
+            int(tail)
+            return "cuda"
+        except Exception:
+            return "cpu"
+    if value == "cuda":
+        return "cuda"
     return "cpu"
+
+
+def _paddle_device_from_config(device: str | None) -> str | None:
+    value = (device or "cpu").strip().lower()
+    if value in {"cpu"}:
+        return "cpu"
+    if value in {"cuda", "gpu"}:
+        return "gpu"
+    if value.startswith("gpu:") or value.startswith("cuda:"):
+        tail = value.split(":", 1)[-1].strip()
+        try:
+            idx = int(tail)
+        except Exception:
+            return None
+        return f"gpu:{idx}"
+    return None
 
 
 def _rapidocr_init_kwargs(device: str) -> dict[str, Any]:
@@ -215,7 +240,9 @@ class RegionTextRecognizer:
             try:
                 import paddle  # type: ignore
 
-                paddle.set_device("gpu")
+                dev = _paddle_device_from_config(config.ocr_device)
+                if dev:
+                    paddle.set_device(dev)
             except Exception:
                 pass
         ctor_options = [

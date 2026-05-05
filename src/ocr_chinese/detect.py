@@ -28,7 +28,37 @@ def _normalize_ocr_device(device: str | None) -> str:
     value = (device or "cpu").strip().lower()
     if value in {"cuda", "gpu"}:
         return "cuda"
+    # Allow explicit GPU index formats: "gpu:1", "cuda:1"
+    if value.startswith("gpu:") or value.startswith("cuda:"):
+        tail = value.split(":", 1)[-1].strip()
+        try:
+            int(tail)
+            return "cuda"
+        except Exception:
+            return "cpu"
+    if value == "cuda":
+        return "cuda"
     return "cpu"
+
+
+def _paddle_device_from_config(device: str | None) -> str | None:
+    """
+    Map user/config device string to paddle.set_device() argument.
+    Returns "cpu", "gpu", or "gpu:<index>".
+    """
+    value = (device or "cpu").strip().lower()
+    if value in {"cpu"}:
+        return "cpu"
+    if value in {"cuda", "gpu"}:
+        return "gpu"
+    if value.startswith("gpu:") or value.startswith("cuda:"):
+        tail = value.split(":", 1)[-1].strip()
+        try:
+            idx = int(tail)
+        except Exception:
+            return None
+        return f"gpu:{idx}"
+    return None
 
 
 def _build_rapidocr(device: str) -> Any:
@@ -200,10 +230,14 @@ class OrientedTextDetector:
             if use_gpu:
                 # Some PaddleOCR versions don't accept `use_gpu` kwarg. Prefer
                 # setting the global Paddle device, and keep ctor kwargs optional.
+                #
+                # IMPORTANT: respect explicit GPU indices (gpu:1) coming from the caller.
                 try:
                     import paddle  # type: ignore
 
-                    paddle.set_device("gpu")
+                    dev = _paddle_device_from_config(config.ocr_device)
+                    if dev:
+                        paddle.set_device(dev)
                 except Exception:
                     pass
             ctor_options = [

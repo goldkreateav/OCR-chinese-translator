@@ -989,8 +989,9 @@ class ProjectService:
             # If no GPU attempt is possible, fall back to CPU.
             if not attempts:
                 attempts.append(("cpu", "cpu", None, None))
-            elif fallback_enabled:
-                # If GPU attempts fail with OOM, allow final CPU retry.
+            else:
+                # Always allow final CPU retry on OOM.
+                # (User explicitly expects GPU-1 fallback and last-resort CPU processing.)
                 attempts.append(("cpu", "cpu", None, None))
         else:
             attempts.append(("cpu", "cpu", None, None))
@@ -1018,10 +1019,13 @@ class ProjectService:
                 config = PipelineConfig(dpi=options.dpi)
                 config.render.backend = options.render_backend
                 config.render.poppler_path = options.poppler_path
-                config.detector.ocr_device = (options.ocr_device or "cpu").strip().lower()
+                # IMPORTANT: propagate the selected paddle device (gpu:<idx>) into configs so
+                # PaddleOCR init doesn't reset us back to GPU 0.
+                config.detector.ocr_device = paddle_dev if eff == "cuda" else "cpu"
                 config.detector.allow_fallback = bool(options.allow_fallback)
                 self._tune_pipeline_config(config, options)
                 rec_cfg = self._build_recognition_config(options)
+                rec_cfg.ocr_device = paddle_dev if eff == "cuda" else "cpu"
 
                 # Validate init upfront so failures are reported immediately.
                 OrientedTextDetector(config.detector)
