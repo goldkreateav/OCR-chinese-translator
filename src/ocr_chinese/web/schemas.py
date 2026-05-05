@@ -36,6 +36,7 @@ class ProjectStatusResponse(BaseModel):
     ocr_runtime: dict | None = None
     paddle_runtime: dict | None = None
     translation: dict | None = None
+    cancel_requested: bool | None = None
     updated_at: str | None = None
 
 

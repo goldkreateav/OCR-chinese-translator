@@ -101,6 +101,7 @@ class ProjectService:
         self._translate_dedupe_lock = threading.Lock()
         self._translate_dedupe_keys: set[str] = set()
         self._generate_threads: dict[str, threading.Thread] = {}
+        self._generate_cancel: dict[str, threading.Event] = {}
         self._generate_lock = threading.Lock()
         self._regions_lock = threading.Lock()
         self._regions_page_locks: dict[str, threading.Lock] = {}
@@ -883,7 +884,7 @@ class ProjectService:
             self._write_status(project_id, status)
             raise
 
-    def generate(self, project_id: str, options: GenerateOptions) -> dict:
+    def generate(self, project_id: str, options: GenerateOptions, *, cancel_event: threading.Event | None = None) -> dict:
         status = self.get_status(project_id)
         project_dir = self._project_dir(project_id)
         pdf_path = project_dir / "input.pdf"
@@ -891,9 +892,13 @@ class ProjectService:
         if not pdf_path.exists():
             raise HTTPException(status_code=404, detail="Input PDF not found.")
 
+        def _cancel_check() -> bool:
+            return bool(cancel_event.is_set()) if cancel_event is not None else False
+
         status["status"] = "running"
         status["error"] = None
         status["stage"] = "mask"
+        status["cancel_requested"] = False
         status["progress"] = {
             "status": "running",
             "indeterminate": True,
@@ -1015,6 +1020,8 @@ class ProjectService:
             self._write_status(project_id, status)
 
             try:
+                if _cancel_check():
+                    raise RuntimeError("cancelled")
                 _set_paddle_device(paddle_dev)
                 config = PipelineConfig(dpi=options.dpi)
                 config.render.backend = options.render_backend
@@ -1077,6 +1084,7 @@ class ProjectService:
                         self.enqueue_region_draft(project_id, str(page_id), rec, lang="ru"),
                     ),
                     page_done_callback=None,
+                    cancel_check=_cancel_check,
                 )
                 self._write_report(project_id, report)
                 status["pipeline_status"] = "done"
@@ -1092,6 +1100,15 @@ class ProjectService:
             except Exception as exc:
                 last_exc = exc
                 err_text = str(exc)
+                if "cancelled" in err_text.lower() or "canceled" in err_text.lower():
+                    status["status"] = "cancelled"
+                    status["stage"] = "cancelled"
+                    status["error"] = None
+                    status["pipeline_status"] = "cancelled"
+                    status["cancel_requested"] = True
+                    status["updated_at"] = _utc_now()
+                    self._write_status(project_id, status)
+                    return {"status": status, "cancelled": True}
                 if eff == "cuda" and _is_oom_error(err_text):
                     # Try next GPU or CPU (if present in attempts list).
                     continue
@@ -1118,9 +1135,16 @@ class ProjectService:
             if existing is not None and existing.is_alive():
                 return {"started": False, "status": "already_running", "project_id": project_id}
 
+            cancel_ev = self._generate_cancel.get(project_id)
+            if cancel_ev is None:
+                cancel_ev = threading.Event()
+                self._generate_cancel[project_id] = cancel_ev
+            else:
+                cancel_ev.clear()
+
             def _runner() -> None:
                 try:
-                    self.generate(project_id, options)
+                    self.generate(project_id, options, cancel_event=cancel_ev)
                 except Exception:
                     # generate() persists error status; keep thread alive-safe.
                     return
@@ -1135,6 +1159,31 @@ class ProjectService:
         except Exception:
             pass
         return {"started": True, "status": "running", "project_id": project_id, "snapshot": status}
+
+    def cancel_generate(self, project_id: str) -> dict:
+        """
+        Best-effort cooperative cancellation for background generation.
+        """
+        with self._generate_lock:
+            t = self._generate_threads.get(project_id)
+            ev = self._generate_cancel.get(project_id)
+            if ev is None:
+                ev = threading.Event()
+                self._generate_cancel[project_id] = ev
+            ev.set()
+            alive = bool(t is not None and t.is_alive())
+
+        # Persist a visible hint immediately (even if the worker hasn't checked it yet).
+        try:
+            status = self.get_status(project_id)
+            status["cancel_requested"] = True
+            if str(status.get("status") or "") == "running":
+                status["status"] = "cancelling"
+            status["updated_at"] = _utc_now()
+            self._write_status(project_id, status)
+        except Exception:
+            pass
+        return {"project_id": project_id, "cancel_requested": True, "was_running": alive}
 
     def load_translation_status(self, project_id: str, page_id: str, *, lang: str = "ru") -> dict:
         payload = self._load_regions_translation_payload(project_id, page_id, lang)

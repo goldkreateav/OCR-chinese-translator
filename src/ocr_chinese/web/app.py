@@ -194,6 +194,11 @@ def create_app(
         payload = service.start_generate_background(project_id, options)
         return JSONResponse(payload)
 
+    @app.post("/api/projects/{project_id}/cancel")
+    async def cancel(project_id: str) -> JSONResponse:
+        payload = service.cancel_generate(project_id)
+        return JSONResponse(payload)
+
     @app.get("/api/projects/{project_id}/status", response_model=ProjectStatusResponse)
     async def status(project_id: str) -> ProjectStatusResponse:
         data = service.get_status(project_id)
@@ -207,7 +212,9 @@ def create_app(
             progress=data.get("progress"),
             progress_pages=data.get("progress_pages"),
             ocr_runtime=data.get("ocr_runtime"),
+            paddle_runtime=data.get("paddle_runtime"),
             translation=data.get("translation"),
+            cancel_requested=bool(data.get("cancel_requested")) if data.get("cancel_requested") is not None else None,
             updated_at=data.get("updated_at"),
         )
 

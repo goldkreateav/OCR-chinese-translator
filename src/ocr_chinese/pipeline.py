@@ -64,6 +64,7 @@ def run_mask_pipeline(
     config: PipelineConfig,
     gt_masks_dir: Path | None = None,
     progress_callback: Callable[[dict], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered_dir = output_dir / "rendered_pages"
@@ -109,6 +110,8 @@ def run_mask_pipeline(
             pass
 
     for idx, page_path in enumerate(page_paths, start=1):
+        if cancel_check and cancel_check():
+            raise RuntimeError("cancelled")
         if progress_callback:
             try:
                 progress_callback(
@@ -193,6 +196,7 @@ def precompute_region_text(
     progress_callback: Callable[[dict], None] | None = None,
     region_ready_callback: Callable[[str, dict], None] | None = None,
     page_done_callback: Callable[[str, list[dict]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
     rendered_dir = output_dir / "rendered_pages"
     proposals_dir = output_dir / "proposals"
@@ -242,6 +246,8 @@ def precompute_region_text(
     }
     page_images = sorted(rendered_dir.glob("page_*.png"))
     for index, page_image in enumerate(page_images, start=1):
+        if cancel_check and cancel_check():
+            raise RuntimeError("cancelled")
         page_id = page_image.stem
         proposal_file = proposals_dir / f"{page_id}_proposals.json"
         if not proposal_file.exists():
@@ -333,6 +339,7 @@ def precompute_region_text(
             region_callback=(
                 (lambda rec, pid=page_id: region_ready_callback(pid, rec)) if region_ready_callback else None
             ),
+            cancel_check=cancel_check,
         )
         ocr_ms = (time.perf_counter() - t_ocr) * 1000.0
         profiling["ocr_ms"] += ocr_ms
@@ -403,6 +410,7 @@ def run_mask_pipeline_with_regions(
     progress_callback: Callable[[dict], None] | None = None,
     region_ready_callback: Callable[[str, dict], None] | None = None,
     page_done_callback: Callable[[str, list[dict]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict:
     started_at = time.perf_counter()
     if progress_callback:
@@ -424,6 +432,7 @@ def run_mask_pipeline_with_regions(
         config=config,
         gt_masks_dir=gt_masks_dir,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
     total_pages = len(report.get("pages", []) or [])
     if progress_callback:
@@ -445,6 +454,7 @@ def run_mask_pipeline_with_regions(
         progress_callback=progress_callback,
         region_ready_callback=region_ready_callback,
         page_done_callback=page_done_callback,
+        cancel_check=cancel_check,
     )
     total_ms = (time.perf_counter() - started_at) * 1000.0
     mask_profile = report.get("profiling", {})

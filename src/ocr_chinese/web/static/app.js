@@ -314,6 +314,7 @@ function App() {
   const [ocrDevice, setOcrDevice] = useState("cuda");
   const [showStatus, setShowStatus] = useState(false);
   const [importOpenInFlight, setImportOpenInFlight] = useState(false);
+  const [cancelInFlight, setCancelInFlight] = useState(false);
 
   const etaModel = useEtaModel();
   const routeRef = useRef(route);
@@ -878,6 +879,26 @@ function App() {
     await loadPages(projectId);
     setGenerateInFlight(false);
     setStatusText("В процессе");
+  }
+
+  async function handleCancel() {
+    if (!projectId) return;
+    if (cancelInFlight) return;
+    setCancelInFlight(true);
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/cancel`, { method: "POST" });
+      if (!resp.ok) {
+        alert(await resp.text());
+        return;
+      }
+      // Status polling will pick up "cancelling/cancelled".
+      setStatusText("Отмена…");
+      await fetchStatus();
+    } catch (e) {
+      alert(String(e || "Cancel failed"));
+    } finally {
+      setCancelInFlight(false);
+    }
   }
 
   async function handleRetryRegion() {
@@ -1585,13 +1606,6 @@ function App() {
                         className="w-full rounded-xl border border-sollers-grayBorder p-2"
                       />
                     </label>
-                    <div className="text-sm text-sollers-gray">
-                      Режим: <span className="mono">${ocrMode}</span> · Устройство:
-                      <span className="mono">${derivedEffectiveDevice === "cuda" ? "GPU" : "CPU"}</span>
-                      <span className="text-sollers-gray"> (request:</span>
-                      <span className="mono">${derivedRequestedDevice}</span>
-                      <span className="text-sollers-gray">)</span>
-                    </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
                         onClick=${handleUpload}
@@ -1621,18 +1635,35 @@ function App() {
                 <article className="rounded-2xl border border-sollers-grayBorder bg-sollers-white p-5">
                   <div className="flex items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold">Статус</h2>
-                    <button
-                      className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder text-sm"
-                      onClick=${() => setShowStatus((v) => !v)}
-                    >
-                      ${showStatus ? "Скрыть" : "Показать"}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder text-sm"
+                        onClick=${() => setShowStatus((v) => !v)}
+                      >
+                        ${showStatus ? "Скрыть" : "Показать"}
+                      </button>
+                      <button
+                        className="px-3 py-1.5 rounded-lg border border-sollers-red text-sollers-red text-sm disabled:opacity-50"
+                        onClick=${handleCancel}
+                        disabled=${!projectId || statusState !== "running" || cancelInFlight}
+                        title="Отменить текущую задачу обработки"
+                      >
+                        ${cancelInFlight ? "Отмена…" : "Отменить"}
+                      </button>
+                    </div>
                   </div>
                   ${showStatus
                     ? html`
                         <div className="mt-3 space-y-2 text-sm">
                           <p><span className="text-sollers-gray">Состояние:</span> <span className="font-medium">${statusText}</span></p>
                           <p><span className="text-sollers-gray">Этап:</span> <span className="font-medium">${stage}</span></p>
+                          <p className="text-sollers-gray">
+                            Режим: <span className="mono">${ocrMode}</span> · Устройство:
+                            <span className="mono">${derivedEffectiveDevice === "cuda" ? "GPU" : "CPU"}</span>
+                            <span className="text-sollers-gray"> (request:</span>
+                            <span className="mono">${derivedRequestedDevice}</span>
+                            <span className="text-sollers-gray">)</span>
+                          </p>
                           <p><span className="text-sollers-gray">Файл:</span> <span className="mono">${filename || "-"}</span></p>
                           <p>
                             <span className="text-sollers-gray">API:</span>

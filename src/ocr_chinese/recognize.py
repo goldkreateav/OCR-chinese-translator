@@ -1400,6 +1400,7 @@ def build_region_records(
     ocr_profile: dict[str, Any] | None = None,
     progress_callback: Any | None = None,
     region_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> list[dict[str, Any]]:
     if should_parallelize_ocr(len(proposals), recognizer.config):
         return build_region_records_parallel(
@@ -1426,6 +1427,13 @@ def build_region_records(
         ocr_profile.setdefault("slow_regions", [])
 
     for idx, proposal in enumerate(proposals):
+        if cancel_check:
+            try:
+                if bool(cancel_check()):
+                    raise RuntimeError("cancelled")
+            except Exception:
+                # If cancel_check itself fails, don't crash OCR.
+                pass
         region_id = f"{page_id}_{idx:05d}"
         extract_t0 = time.perf_counter()
         roi, raw_roi, roi_rotation_deg = extract_region_roi_debug(image_gray, proposal.polygon)
@@ -1530,6 +1538,7 @@ def build_region_records_parallel(
     ocr_profile: dict[str, Any] | None = None,
     progress_callback: Any | None = None,
     region_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> list[dict[str, Any]]:
     # RapidOCR benefits from threading here: avoids pickling large numpy arrays to subprocesses.
     if (recognition_config.backend or "").lower() == "rapidocr":
@@ -1542,6 +1551,7 @@ def build_region_records_parallel(
             ocr_profile=ocr_profile,
             progress_callback=progress_callback,
             region_callback=region_callback,
+            cancel_check=cancel_check,
         )
     items: list[dict[str, Any]] = []
     page_crop_dir: Path | None = None
@@ -1699,6 +1709,7 @@ def build_region_records_parallel_threaded(
     ocr_profile: dict[str, Any] | None = None,
     progress_callback: Any | None = None,
     region_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     page_crop_dir: Path | None = None
@@ -1707,6 +1718,12 @@ def build_region_records_parallel_threaded(
         page_crop_dir.mkdir(parents=True, exist_ok=True)
 
     for idx, proposal in enumerate(proposals):
+        if cancel_check:
+            try:
+                if bool(cancel_check()):
+                    raise RuntimeError("cancelled")
+            except Exception:
+                pass
         region_id = f"{page_id}_{idx:05d}"
         roi, raw_roi, roi_rotation_deg = extract_region_roi_debug(image_gray, proposal.polygon)
         crop_path = None
