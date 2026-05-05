@@ -327,7 +327,7 @@ function App() {
   const [importAssetsRevByPage, setImportAssetsRevByPage] = useState({}); // pageId -> number (for stable cache buster)
   const [importBundleFile, setImportBundleFile] = useState(null);
   const [uploadFile, setUploadFile] = useState(null);
-  const [dpi, setDpi] = useState(400);
+  const [dpi, setDpi] = useState(360);
   const [ocrMode, setOcrMode] = useState("eco");
   const [ocrDevice, setOcrDevice] = useState("cuda");
   const [showStatus, setShowStatus] = useState(false);
@@ -882,7 +882,7 @@ function App() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        dpi: Number(dpi || 400),
+        dpi: Number(dpi || 360),
         ocr_mode: "eco",
         ocr_device: ocrDevice, // backend will auto-fallback to CPU if CUDA is not usable
       }),
@@ -960,7 +960,7 @@ function App() {
         project_id: projectId,
         filename: filename || null,
         app_version: version,
-        dpi: Number(dpi || 400),
+        dpi: Number(dpi || 360),
         ocr_mode: String(ocrMode || "eco"),
         ocr_device: String(ocrDevice || "cpu"),
       },
@@ -1017,7 +1017,7 @@ function App() {
     try {
       const fd = new FormData();
       fd.append("file", importBundleFile);
-      fd.append("dpi", String(Number(dpi || 400)));
+      fd.append("dpi", String(Number(dpi || 360)));
       const resp = await fetch(apiUrl("/import/ocpkg"), { method: "POST", body: fd });
       if (!resp.ok) {
         const t = await resp.text();
@@ -1620,7 +1620,7 @@ function App() {
                         min="72"
                         max="1200"
                         value=${dpi}
-                        onChange=${(e) => setDpi(Number(e.target.value || 400))}
+                        onChange=${(e) => setDpi(Number(e.target.value || 360))}
                         className="w-full rounded-xl border border-sollers-grayBorder p-2"
                       />
                     </label>

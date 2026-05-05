@@ -75,7 +75,7 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
 
 @dataclass
 class GenerateOptions:
-    dpi: int = 400
+    dpi: int = 360
     render_backend: str = "auto"
     poppler_path: str | None = None
     ocr_mode: str = "eco"

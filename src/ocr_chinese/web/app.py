@@ -112,7 +112,7 @@ def create_app(
         )
 
     @app.post("/api/import/ocpkg")
-    async def import_ocpkg(file: UploadFile = File(...), dpi: int = Form(400)) -> JSONResponse:
+    async def import_ocpkg(file: UploadFile = File(...), dpi: int = Form(360)) -> JSONResponse:
         """
         One-file import: ocpkg contains input.pdf + report.json.
         We render pages from embedded PDF and return a project_id + pages list,
@@ -129,7 +129,7 @@ def create_app(
             report_dpi = int(meta.get("dpi")) if meta.get("dpi") is not None else None
         except Exception:
             report_dpi = None
-        dpi_to_render = report_dpi if (isinstance(report_dpi, int) and report_dpi > 0) else int(dpi or 400)
+        dpi_to_render = report_dpi if (isinstance(report_dpi, int) and report_dpi > 0) else int(dpi or 360)
         rendered = service.render_pages_for_existing_project(
             project_id,
             dpi=int(dpi_to_render),
@@ -141,14 +141,14 @@ def create_app(
     @app.post("/api/import/projects")
     async def import_project(
         file: UploadFile = File(...),
-        dpi: int = Form(400),
+        dpi: int = Form(360),
         render_backend: str | None = Form(None),
     ) -> JSONResponse:
         chosen_backend = render_backend or app.state.default_render_backend
         poppler_path = app.state.default_poppler_path
         payload = service.create_import_project_and_render_pages(
             file,
-            dpi=int(dpi or 400),
+            dpi=int(dpi or 360),
             render_backend=chosen_backend,
             poppler_path=poppler_path,
         )

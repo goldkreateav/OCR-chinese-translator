@@ -10,7 +10,7 @@ class ProjectCreateResponse(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    dpi: int = 400
+    dpi: int = 360
     render_backend: str | None = None
     poppler_path: str | None = None
     ocr_mode: str = "eco"  # eco | balanced | max
@@ -19,7 +19,7 @@ class GenerateRequest(BaseModel):
 
 
 class ImportRenderRequest(BaseModel):
-    dpi: int = 400
+    dpi: int = 360
     render_backend: str | None = None
     poppler_path: str | None = None
 
