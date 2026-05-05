@@ -21,7 +21,7 @@ function apiUrl(path) {
   if (p.startsWith("/api/")) return `.${p}`;
   if (p === "/api") return "./api";
   if (p.startsWith("api/")) return `./${p}`;
-  if (p.startsWith("/")) return `.${p}`;
+  if (p.startsWith("/")) return `./api${p}`;
   return `./api/${p.replace(/^\.\//, "").replace(/^api\//, "").replace(/^\//, "")}`;
 }
 
