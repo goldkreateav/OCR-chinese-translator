@@ -240,8 +240,8 @@ def create_app(
                 continue
         return PageAssetsResponse(
             page_id=page_id,
-            image_url=f"/api/projects/{project_id}/pages/{page_id}/image",
-            mask_url=f"/api/projects/{project_id}/pages/{page_id}/mask",
+            image_url=f"api/projects/{project_id}/pages/{page_id}/image",
+            mask_url=f"api/projects/{project_id}/pages/{page_id}/mask",
             regions=region_models,
         )
 

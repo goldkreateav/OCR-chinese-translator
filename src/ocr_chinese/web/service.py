@@ -1364,7 +1364,6 @@ class ProjectService:
     def _tune_pipeline_config(self, config: PipelineConfig, options: GenerateOptions) -> None:
         mode = (options.ocr_mode or "eco").lower()
         if mode == "eco":
-            config.dpi = min(int(config.dpi), 360)
             config.detector.score_threshold = max(0.24, float(config.detector.score_threshold))
             config.detector.min_area = max(20, int(config.detector.min_area))
             return
