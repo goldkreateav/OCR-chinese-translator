@@ -33,7 +33,8 @@ function relUrl(raw) {
 }
 
 function routeFromPath(pathname) {
-  return pathname === "/import" ? "import" : "workspace";
+  const p = String(pathname || "");
+  return p === "/import" || p.endsWith("/import") ? "import" : "workspace";
 }
 
 function formatDuration(seconds) {
@@ -513,7 +514,10 @@ function App() {
 
   function goTo(nextRoute) {
     if (nextRoute === routeRef.current) return;
-    const nextPath = nextRoute === "import" ? "/import" : "/";
+    const cur = window.location.pathname || "/";
+    const base = cur.endsWith("/import") ? cur.slice(0, -"/import".length) || "/" : cur;
+    const baseNorm = base.endsWith("/") ? base : `${base}/`;
+    const nextPath = nextRoute === "import" ? `${baseNorm}import` : baseNorm;
     window.history.pushState({}, "", nextPath);
     setRoute(nextRoute);
   }
