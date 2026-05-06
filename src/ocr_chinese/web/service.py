@@ -100,11 +100,62 @@ class ProjectService:
         self._translate_metrics: dict[str, dict[str, int]] = {}
         self._translate_dedupe_lock = threading.Lock()
         self._translate_dedupe_keys: set[str] = set()
+        # Generation runs in a separate worker process per project_id.
+        # This isolates fatal CUDA/Paddle crashes (e.g. CUDA error 700) from the web server.
         self._generate_threads: dict[str, threading.Thread] = {}
+        self._generate_procs: dict[str, subprocess.Popen[str]] = {}
         self._generate_cancel: dict[str, threading.Event] = {}
         self._generate_lock = threading.Lock()
         self._regions_lock = threading.Lock()
         self._regions_page_locks: dict[str, threading.Lock] = {}
+
+    def _cancel_flag_path(self, project_id: str) -> Path:
+        return self._project_dir(project_id) / "output" / "cancel.flag"
+
+    def _clear_cancel_flag(self, project_id: str) -> None:
+        try:
+            self._cancel_flag_path(project_id).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def _set_cancel_flag(self, project_id: str) -> None:
+        try:
+            path = self._cancel_flag_path(project_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # content is informational; presence is the signal
+            _atomic_write_text(path, _utc_now(), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _now_ts(self) -> float:
+        return time.time()
+
+    def _updated_at_age_s(self, status: dict) -> float | None:
+        raw = status.get("updated_at")
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(raw))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, self._now_ts() - dt.timestamp())
+        except Exception:
+            return None
+
+    def _looks_like_fatal_cuda(self, text: str) -> bool:
+        t = str(text or "")
+        return (
+            "cuda error(700)" in t.lower()
+            or "cudaerrorillegaladdress" in t.lower()
+            or "illegal memory access" in t.lower()
+            or "process abort signal" in t.lower()
+            or "sigabrt" in t.lower()
+        )
+
+    def _generate_worker_log_paths(self, project_id: str) -> tuple[Path, Path]:
+        logs_dir = self._project_dir(project_id) / "output" / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        return (logs_dir / "generate.out.log", logs_dir / "generate.err.log")
 
     def _page_regions_lock(self, project_id: str, page_id: str) -> threading.Lock:
         key = f"{project_id}:{page_id}"
@@ -1124,16 +1175,23 @@ class ProjectService:
 
     def start_generate_background(self, project_id: str, options: GenerateOptions) -> dict:
         """
-        Start generation in a background thread so the web server can keep
+        Start generation in a separate worker *process* so the web server can keep
         answering /status polls while the pipeline runs.
         """
         # Validate existence early (also warms up status file).
         status = self.get_status(project_id)
 
         with self._generate_lock:
-            existing = self._generate_threads.get(project_id)
-            if existing is not None and existing.is_alive():
+            existing_proc = self._generate_procs.get(project_id)
+            if existing_proc is not None and existing_proc.poll() is None:
                 return {"started": False, "status": "already_running", "project_id": project_id}
+
+            # Clean up any previous process handles.
+            if existing_proc is not None and existing_proc.poll() is not None:
+                try:
+                    self._generate_procs.pop(project_id, None)
+                except Exception:
+                    pass
 
             cancel_ev = self._generate_cancel.get(project_id)
             if cancel_ev is None:
@@ -1141,15 +1199,244 @@ class ProjectService:
                 self._generate_cancel[project_id] = cancel_ev
             else:
                 cancel_ev.clear()
+            self._clear_cancel_flag(project_id)
 
-            def _runner() -> None:
+            out_log, err_log = self._generate_worker_log_paths(project_id)
+            try:
+                out_fp = open(out_log, "a", encoding="utf-8", errors="replace")
+            except Exception:
+                out_fp = None
+            try:
+                err_fp = open(err_log, "a", encoding="utf-8", errors="replace")
+            except Exception:
+                err_fp = None
+
+            # Launch worker as a separate python module to isolate fatal CUDA crashes.
+            payload = {
+                "project_id": str(project_id),
+                "root_dir": str(self.root_dir),
+                "options": {
+                    "dpi": int(getattr(options, "dpi", 360) or 360),
+                    "render_backend": str(getattr(options, "render_backend", "auto") or "auto"),
+                    "poppler_path": getattr(options, "poppler_path", None),
+                    "ocr_mode": str(getattr(options, "ocr_mode", "eco") or "eco"),
+                    "ocr_workers": getattr(options, "ocr_workers", None),
+                    "ocr_device": str(getattr(options, "ocr_device", "cpu") or "cpu"),
+                    "ocr_fallback_to_cpu_on_oom": bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False)),
+                    "ocr_auto_select_gpu": bool(getattr(options, "ocr_auto_select_gpu", True)),
+                    "ocr_min_free_vram_mb": int(getattr(options, "ocr_min_free_vram_mb", 1024) or 1024),
+                    "allow_fallback": bool(getattr(options, "allow_fallback", False)),
+                },
+            }
+            cmd = [sys.executable, "-m", "ocr_chinese.web.generate_worker"]
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=out_fp or subprocess.DEVNULL,
+                stderr=err_fp or subprocess.DEVNULL,
+                text=True,
+            )
+            try:
+                if proc.stdin:
+                    proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    proc.stdin.flush()
+                    proc.stdin.close()
+            except Exception:
+                pass
+            self._generate_procs[project_id] = proc
+
+            def _monitor() -> None:
+                stall_timeout_s = float(os.getenv("WEB_GENERATE_STALL_TIMEOUT_S", "900") or "900")
+                cpu_retry_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False)) or bool(
+                    getattr(options, "allow_fallback", False)
+                )
+                requested_device = str(getattr(options, "ocr_device", "cpu") or "cpu").strip().lower()
+                did_cpu_retry = False
+
+                def _read_err_tail(max_bytes: int = 16000) -> str:
+                    try:
+                        data = err_log.read_bytes()
+                        if len(data) > max_bytes:
+                            data = data[-max_bytes:]
+                        return data.decode("utf-8", errors="replace")
+                    except Exception:
+                        return ""
+
+                while True:
+                    # process exit?
+                    rc = proc.poll()
+                    if rc is not None:
+                        break
+
+                    # stall watchdog: if status isn't updated for too long, terminate worker.
+                    try:
+                        st = self.get_status(project_id)
+                        age_s = self._updated_at_age_s(st)
+                        if (
+                            age_s is not None
+                            and stall_timeout_s > 0
+                            and age_s >= stall_timeout_s
+                            and str(st.get("status") or "") in {"running", "cancelling"}
+                            and str(st.get("stage") or "") in {"mask", "ocr"}
+                        ):
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                            # Give it a short grace period, then kill.
+                            try:
+                                proc.wait(timeout=10)
+                            except Exception:
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
+                            st2 = self.get_status(project_id)
+                            st2["status"] = "error"
+                            st2["error"] = f"Generation stalled: no progress for {int(age_s)}s (timeout {int(stall_timeout_s)}s)."
+                            st2["updated_at"] = _utc_now()
+                            self._write_status(project_id, st2)
+                            break
+                    except Exception:
+                        pass
+
+                    time.sleep(2.0)
+
+                # Close log FDs (best-effort)
                 try:
-                    self.generate(project_id, options, cancel_event=cancel_ev)
+                    if out_fp:
+                        out_fp.close()
                 except Exception:
-                    # generate() persists error status; keep thread alive-safe.
+                    pass
+                try:
+                    if err_fp:
+                        err_fp.close()
+                except Exception:
+                    pass
+
+                rc = proc.poll()
+                if rc is None:
                     return
 
-            t = threading.Thread(target=_runner, name=f"generate-{project_id}", daemon=True)
+                # Successful exit: worker should have persisted final status itself.
+                if int(rc) == 0:
+                    with self._generate_lock:
+                        self._generate_procs.pop(project_id, None)
+                    return
+
+                # Non-zero exit: classify; possibly CPU-retry if it looks like fatal CUDA.
+                err_tail = _read_err_tail()
+                fatal_cuda = self._looks_like_fatal_cuda(err_tail)
+                if (
+                    fatal_cuda
+                    and not did_cpu_retry
+                    and cpu_retry_enabled
+                    and requested_device in {"cuda", "gpu"}
+                ):
+                    did_cpu_retry = True
+                    # Mark status as retrying on CPU.
+                    try:
+                        st = self.get_status(project_id)
+                        st["status"] = "running"
+                        st["stage"] = str(st.get("stage") or "mask") or "mask"
+                        st["error"] = None
+                        rt = st.get("paddle_runtime") or {}
+                        if not isinstance(rt, dict):
+                            rt = {}
+                        rt = dict(rt)
+                        rt.update(
+                            {
+                                "gpu_crash_detected": True,
+                                "retrying_on_cpu": True,
+                                "last_worker_exit_code": int(rc),
+                            }
+                        )
+                        st["paddle_runtime"] = rt
+                        st["updated_at"] = _utc_now()
+                        self._write_status(project_id, st)
+                    except Exception:
+                        pass
+
+                    # Launch a new worker with ocr_device=cpu
+                    cpu_opts = GenerateOptions(**(payload.get("options") or {}))
+                    cpu_opts.ocr_device = "cpu"
+                    cpu_payload = dict(payload)
+                    cpu_payload["options"] = dict(cpu_opts.__dict__)
+                    out_log2, err_log2 = self._generate_worker_log_paths(project_id)
+                    try:
+                        out_fp2 = open(out_log2, "a", encoding="utf-8", errors="replace")
+                    except Exception:
+                        out_fp2 = None
+                    try:
+                        err_fp2 = open(err_log2, "a", encoding="utf-8", errors="replace")
+                    except Exception:
+                        err_fp2 = None
+                    proc2 = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=out_fp2 or subprocess.DEVNULL,
+                        stderr=err_fp2 or subprocess.DEVNULL,
+                        text=True,
+                    )
+                    try:
+                        if proc2.stdin:
+                            proc2.stdin.write(json.dumps(cpu_payload, ensure_ascii=False) + "\n")
+                            proc2.stdin.flush()
+                            proc2.stdin.close()
+                    except Exception:
+                        pass
+                    with self._generate_lock:
+                        self._generate_procs[project_id] = proc2
+                    # Monitor the CPU retry in the same thread.
+                    proc_retry = proc2
+                    while True:
+                        rc2 = proc_retry.poll()
+                        if rc2 is not None:
+                            break
+                        time.sleep(2.0)
+                    try:
+                        if out_fp2:
+                            out_fp2.close()
+                    except Exception:
+                        pass
+                    try:
+                        if err_fp2:
+                            err_fp2.close()
+                    except Exception:
+                        pass
+                    with self._generate_lock:
+                        self._generate_procs.pop(project_id, None)
+                    if int(rc2) == 0:
+                        return
+                    # CPU retry also failed: persist error.
+                    try:
+                        stf = self.get_status(project_id)
+                        stf["status"] = "error"
+                        stf["error"] = f"Worker failed (exit={int(rc2)}). GPU crash detected earlier; CPU retry failed too."
+                        stf["updated_at"] = _utc_now()
+                        self._write_status(project_id, stf)
+                    except Exception:
+                        pass
+                    return
+
+                # No retry path: persist error status.
+                try:
+                    st = self.get_status(project_id)
+                    st["status"] = "error"
+                    st["error"] = f"Worker failed (exit={int(rc)}). See logs: {err_log.as_posix()}"
+                    if fatal_cuda:
+                        st["error"] = (
+                            f"Fatal CUDA crash detected (CUDA700/illegal access). Worker exit={int(rc)}. "
+                            f"Process must be restarted; consider forcing CPU. Logs: {err_log.as_posix()}"
+                        )
+                    st["updated_at"] = _utc_now()
+                    self._write_status(project_id, st)
+                except Exception:
+                    pass
+                with self._generate_lock:
+                    self._generate_procs.pop(project_id, None)
+
+            t = threading.Thread(target=_monitor, name=f"generate-monitor-{project_id}", daemon=True)
             self._generate_threads[project_id] = t
             t.start()
 
@@ -1166,12 +1453,20 @@ class ProjectService:
         """
         with self._generate_lock:
             t = self._generate_threads.get(project_id)
+            proc = self._generate_procs.get(project_id)
             ev = self._generate_cancel.get(project_id)
             if ev is None:
                 ev = threading.Event()
                 self._generate_cancel[project_id] = ev
             ev.set()
-            alive = bool(t is not None and t.is_alive())
+            alive = bool((proc is not None and proc.poll() is None) or (t is not None and t.is_alive()))
+            self._set_cancel_flag(project_id)
+            # Best-effort: terminate the worker process to make cancellation immediate.
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
 
         # Persist a visible hint immediately (even if the worker hasn't checked it yet).
         try:
