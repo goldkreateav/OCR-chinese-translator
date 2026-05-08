@@ -234,17 +234,16 @@ class RegionTextRecognizer:
             if self._paddle_bridge is not None:
                 return
         use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
-        if use_gpu:
-            # Some PaddleOCR versions don't accept `use_gpu` kwarg. Prefer setting
-            # the global Paddle device, and keep ctor kwargs optional.
-            try:
-                import paddle  # type: ignore
+        # Some PaddleOCR/PaddleX builds can silently pick GPU if `use_gpu` is omitted.
+        # Always set global paddle device explicitly for both CUDA and CPU paths.
+        try:
+            import paddle  # type: ignore
 
-                dev = _paddle_device_from_config(config.ocr_device)
-                if dev:
-                    paddle.set_device(dev)
-            except Exception:
-                pass
+            dev = _paddle_device_from_config(config.ocr_device)
+            if dev:
+                paddle.set_device(dev)
+        except Exception:
+            pass
         ctor_options = [
             dict(
                 lang=config.lang,
@@ -309,6 +308,15 @@ class RegionTextRecognizer:
             dict(lang=config.lang, enable_mkldnn=False),
             dict(lang=config.lang),
         ]
+        if not use_gpu:
+            # Prefer explicit CPU ctor options first; this prevents implicit GPU
+            # selection on some PaddleOCR/PaddleX versions.
+            cpu_first = []
+            for kw in ctor_options:
+                kw2 = dict(kw)
+                kw2["use_gpu"] = False
+                cpu_first.append(kw2)
+            ctor_options = cpu_first + ctor_options
         if use_gpu:
             # Try GPU-enabled constructors first. Some PaddleOCR versions/builds
             # don't accept `use_gpu` or don't have CUDA support; we'll fall back.

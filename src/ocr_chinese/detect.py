@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import os
 import warnings
 
 import cv2
@@ -22,6 +23,18 @@ class DetectionConfig:
     min_box_size: int = 4
     ocr_device: str = "cpu"  # cpu | cuda
     allow_fallback: bool = True
+
+
+def _looks_like_oom(exc: Exception) -> bool:
+    if isinstance(exc, MemoryError):
+        return True
+    t = str(exc or "")
+    return (
+        "ResourceExhaustedError" in t
+        or "Out of memory" in t
+        or "CUDA out of memory" in t
+        or "Cannot allocate" in t
+    )
 
 
 def _normalize_ocr_device(device: str | None) -> str:
@@ -227,19 +240,16 @@ class OrientedTextDetector:
                     self._rapid = _build_rapidocr(config.ocr_device)
                 return
             use_gpu = _normalize_ocr_device(config.ocr_device) == "cuda"
-            if use_gpu:
-                # Some PaddleOCR versions don't accept `use_gpu` kwarg. Prefer
-                # setting the global Paddle device, and keep ctor kwargs optional.
-                #
-                # IMPORTANT: respect explicit GPU indices (gpu:1) coming from the caller.
-                try:
-                    import paddle  # type: ignore
+            # Some PaddleOCR versions ignore ctor kwargs and can silently pick GPU.
+            # Always set global paddle device explicitly for both CUDA and CPU.
+            try:
+                import paddle  # type: ignore
 
-                    dev = _paddle_device_from_config(config.ocr_device)
-                    if dev:
-                        paddle.set_device(dev)
-                except Exception:
-                    pass
+                dev = _paddle_device_from_config(config.ocr_device)
+                if dev:
+                    paddle.set_device(dev)
+            except Exception:
+                pass
             ctor_options = [
                 # Prefer disabling all orientation/unwarp helpers to keep box coordinates
                 # in the same frame as the original rendered page.
@@ -283,6 +293,15 @@ class OrientedTextDetector:
                 dict(lang=config.paddle_lang, enable_mkldnn=False),
                 dict(lang=config.paddle_lang),
             ]
+            if not use_gpu:
+                # Prefer explicit CPU ctor options first; some PaddleOCR/PaddleX
+                # builds may default to GPU when use_gpu isn't passed.
+                cpu_first = []
+                for kw in ctor_options:
+                    kw2 = dict(kw)
+                    kw2["use_gpu"] = False
+                    cpu_first.append(kw2)
+                ctor_options = cpu_first + ctor_options
             if use_gpu:
                 # Try GPU-enabled constructors first. Some PaddleOCR versions/builds
                 # don't accept `use_gpu` or don't have CUDA support; we'll fall back.
@@ -321,27 +340,88 @@ class OrientedTextDetector:
         image_input = image_gray
         if isinstance(image_gray, np.ndarray) and image_gray.ndim == 2:
             image_input = cv2.cvtColor(image_gray, cv2.COLOR_GRAY2BGR)
-        try:
-            result = self._paddle.ocr(image_input, cls=False, det=True, rec=False) or []
-        except Exception:
-            # New API compatibility
+
+        def _run_detect_once(max_side_limit: int | None) -> tuple[Any, float]:
+            img = image_input
+            scale = 1.0
+            if isinstance(max_side_limit, int) and max_side_limit > 0:
+                h, w = img.shape[:2]
+                longest = max(h, w)
+                if longest > max_side_limit:
+                    scale = float(max_side_limit) / float(longest)
+                    new_w = max(1, int(round(float(w) * scale)))
+                    new_h = max(1, int(round(float(h) * scale)))
+                    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
             try:
-                result = self._paddle.ocr(image_input, cls=False) or []
+                return (
+                    self._paddle.ocr(
+                        img,
+                        cls=False,
+                        det=True,
+                        rec=False,
+                    )
+                    or [],
+                    scale,
+                )
             except Exception:
+                # New API compatibility
                 try:
-                    # PaddleOCR 3.x may reject cls/det/rec kwargs and route to predict().
-                    result = self._paddle.ocr(image_input) or []
+                    return self._paddle.ocr(img, cls=False) or [], scale
                 except Exception:
-                    # PaddleOCR 3.5+: `.ocr()` is a thin wrapper over `.predict()`
-                    # and no longer accepts det/rec kwargs. Fall back explicitly.
-                    if hasattr(self._paddle, "predict"):
-                        predicted = self._paddle.predict(image_input)
-                        try:
-                            result = list(predicted)
-                        except Exception:
-                            result = predicted or []
-                    else:
+                    try:
+                        # PaddleOCR 3.x may reject cls/det/rec kwargs and route to predict().
+                        return self._paddle.ocr(img) or [], scale
+                    except Exception:
+                        # PaddleOCR 3.5+: `.ocr()` is a thin wrapper over `.predict()`
+                        # and no longer accepts det/rec kwargs. Fall back explicitly.
+                        if hasattr(self._paddle, "predict"):
+                            try:
+                                predicted = self._paddle.predict(img)
+                            except Exception:
+                                raise
+                            try:
+                                return list(predicted), scale
+                            except Exception:
+                                return predicted or [], scale
                         raise
+
+        use_gpu = _normalize_ocr_device(self.config.ocr_device) == "cuda"
+        result: Any
+        result_scale = 1.0
+        if use_gpu:
+            # GPU safety: reduce detector side limit on OOM instead of failing hard.
+            # Default sequence is conservative; override with OCR_PADDLE_MAX_SIDE_LIMITS.
+            limits_raw = str(os.getenv("OCR_PADDLE_MAX_SIDE_LIMITS", "3000,2400,2000,1600") or "").strip()
+            parsed: list[int] = []
+            for chunk in limits_raw.split(","):
+                s = chunk.strip()
+                if not s:
+                    continue
+                try:
+                    v = int(float(s))
+                except Exception:
+                    continue
+                if v > 0:
+                    parsed.append(v)
+            side_limits = parsed or [3000, 2400, 2000, 1600]
+            last_exc: Exception | None = None
+            result = None
+            for lim in side_limits:
+                try:
+                    result, result_scale = _run_detect_once(lim)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if _looks_like_oom(exc):
+                        continue
+                    raise
+            if last_exc is not None:
+                raise last_exc
+        else:
+            result, result_scale = _run_detect_once(None)
+
         raw_boxes = _extract_paddle_det_items(result)
         proposals: list[TextProposal] = []
         for item in raw_boxes:
@@ -352,6 +432,9 @@ class OrientedTextDetector:
             points = np.asarray(polygon, dtype=np.float32)
             if points.ndim != 2 or points.shape[0] < 4 or points.shape[1] < 2:
                 continue
+            if result_scale != 1.0 and result_scale > 0.0:
+                # Map detector polygons back to original page coordinates.
+                points = points / float(result_scale)
             area = cv2.contourArea(points)
             if area < self.config.min_area:
                 continue

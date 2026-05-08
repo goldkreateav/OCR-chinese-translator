@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import subprocess
 
 from fastapi import Body, FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -63,6 +64,28 @@ def create_app(
             v = pkg_version("ocr-chinese-masker")
         except Exception:
             v = "unknown"
+
+        # Extra build metadata to reliably verify which code revision is running,
+        # even when the installed Python package version doesn't change.
+        web_build_id = str(os.getenv("OCR_WEB_BUILD_ID", "") or "").strip() or None
+        web_git_sha: str | None = None
+        if web_build_id is None:
+            try:
+                repo_root = Path(__file__).resolve().parents[3]
+                proc = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=repo_root,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                )
+                if proc.returncode == 0:
+                    web_git_sha = (proc.stdout or "").strip() or None
+            except Exception:
+                web_git_sha = None
+        if web_build_id is None:
+            web_build_id = web_git_sha or "unknown"
         paddle_device_probe = service._probe_paddle_device_runtime()
         paddle_probe = service._probe_paddle_runtime()
         enable_retry_ocr = str(os.getenv("WEB_ENABLE_RETRY_OCR", "") or "").strip().lower() in {
@@ -74,6 +97,8 @@ def create_app(
         return JSONResponse(
             {
                 "app_version": v,
+                "web_build_id": web_build_id,
+                "web_git_sha": web_git_sha,
                 "quality_bridge_enabled": bool(os.getenv("OCR_PADDLE_PYTHON")),
                 "bridge_python": os.getenv("OCR_PADDLE_PYTHON"),
                 "default_ocr_device": app.state.default_ocr_device,
