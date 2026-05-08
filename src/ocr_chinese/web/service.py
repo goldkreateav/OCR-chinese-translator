@@ -971,11 +971,12 @@ class ProjectService:
                 pass
 
         def _is_oom_error(text: str) -> bool:
+            t = str(text or "")
             return (
-                "ResourceExhaustedError" in text
-                or "Out of memory" in text
-                or "CUDA out of memory" in text
-                or "Cannot allocate" in text
+                "ResourceExhaustedError" in t
+                or "Out of memory" in t
+                or "CUDA out of memory" in t
+                or "Cannot allocate" in t
             )
 
         def _query_gpus_free_vram_mb() -> list[dict]:
@@ -1194,7 +1195,9 @@ class ProjectService:
                     status["updated_at"] = _utc_now()
                     self._write_status(project_id, status)
                     return {"status": status, "cancelled": True}
-                if eff == "cuda" and _is_oom_error(err_text):
+                # IMPORTANT: Paddle sometimes raises plain MemoryError after a ResourceExhaustedError,
+                # and MemoryError often stringifies to empty text. Treat it as OOM for retry purposes.
+                if eff == "cuda" and (isinstance(exc, MemoryError) or _is_oom_error(err_text)):
                     # Try next GPU or CPU (if present in attempts list).
                     continue
                 break
