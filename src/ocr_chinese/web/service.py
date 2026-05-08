@@ -1086,8 +1086,42 @@ class ProjectService:
                 rec_cfg.ocr_device = paddle_dev if eff == "cuda" else "cpu"
 
                 # Validate init upfront so failures are reported immediately.
-                OrientedTextDetector(config.detector)
-                RegionTextRecognizer(rec_cfg)
+                # Some Paddle/PaddleX model initializations can hang (especially around doc orientation models),
+                # so guard with a timeout to fail fast and surface logs.
+                init_timeout_s = float(os.getenv("OCR_INIT_TIMEOUT_S", "180") or "180")
+                status["stage"] = "ocr_init"
+                status["progress"] = {
+                    "status": "running",
+                    "indeterminate": True,
+                    "current_page": 0,
+                    "total_pages": 0,
+                    "page_id": None,
+                    "current_region": 0,
+                    "total_regions": 0,
+                }
+                status["ocr_runtime"] = {
+                    "backend": str(getattr(rec_cfg, "backend", "") or ""),
+                    "parallel_ocr": bool(getattr(rec_cfg, "parallel_ocr", False)),
+                    "max_workers": int(getattr(rec_cfg, "max_workers", 1) or 1),
+                    "init_timeout_s": init_timeout_s,
+                }
+                status["updated_at"] = _utc_now()
+                self._write_status(project_id, status)
+
+                init_err: list[str] = []
+
+                def _init_models() -> None:
+                    OrientedTextDetector(config.detector)
+                    RegionTextRecognizer(rec_cfg)
+
+                t_init = threading.Thread(target=_init_models, name=f"ocr-init-{project_id}", daemon=True)
+                t_init.start()
+                t_init.join(timeout=init_timeout_s if init_timeout_s > 0 else None)
+                if t_init.is_alive():
+                    raise RuntimeError(
+                        f"OCR init timeout after {int(init_timeout_s)}s (stage ocr_init). "
+                        f"Likely stuck in Paddle/PaddleX model load (e.g. doc orientation)."
+                    )
 
                 def on_progress(update: dict) -> None:
                     status_inner = self.get_status(project_id)
@@ -1557,21 +1591,64 @@ class ProjectService:
         is_cuda = ocr_device == "cuda"
         cpu = int(os.cpu_count() or 4)
         debug_raw = str(os.getenv("OCR_DEBUG_RAW_RESULTS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
-        # On Windows, the latest PaddleOCR/PaddleX pipeline can fail at runtime with
-        # oneDNN/PIR executor issues in detection, while RapidOCR works reliably for ROI recognition.
-        # Allow forcing Paddle recognition via env var if needed.
+        # Backend selection (regression-safe):
+        # - RapidOCR is typically the most stable for ROI recognition and doesn't require heavy Paddle runtime init.
+        # - PaddleOCR can hang/crash on some Linux/GPU setups and process-parallel execution is risky with native libs.
+        #
+        # You can override explicitly with:
+        # - OCR_BACKEND=rapidocr|paddleocr
+        # - OCR_FORCE_PADDLE_RECOGNITION=1 (legacy alias)
+        backend_env = str(os.getenv("OCR_BACKEND", "") or "").strip().lower()
         force_paddle = str(os.getenv("OCR_FORCE_PADDLE_RECOGNITION", "") or "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }
-        backend = "paddleocr"
-        if sys.platform.startswith("win") and not force_paddle:
-            backend = "rapidocr"
+        backend: str
+        if backend_env in {"rapidocr", "paddleocr"}:
+            backend = backend_env
+        elif force_paddle:
+            backend = "paddleocr"
+        else:
+            # Auto: prefer RapidOCR when installed.
+            try:
+                from rapidocr_onnxruntime import RapidOCR as _RapidOCR  # type: ignore
+
+                backend = "rapidocr" if _RapidOCR is not None else "paddleocr"
+            except Exception:
+                backend = "paddleocr"
         auto_workers = max(2, min(8, cpu // 2))
         workers = options.ocr_workers if options.ocr_workers is not None else auto_workers
         workers = max(1, int(workers))
+
+        # Safety: PaddleOCR + ProcessPoolExecutor can deadlock/hang on some Linux builds.
+        # Prefer serial OCR by default for paddle backend unless explicitly overridden.
+        allow_paddle_parallel = str(os.getenv("OCR_PADDLE_PARALLEL", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if backend == "paddleocr" and not allow_paddle_parallel:
+            # Keep the existing quality knobs, but avoid process-parallel path.
+            return RecognitionConfig(
+                backend=backend,
+                mode="hybrid" if mode in {"balanced", "max"} else "fast",
+                use_multipass=bool(mode == "max"),
+                parallel_ocr=False,
+                max_workers=1,
+                batch_size=24,
+                parallel_min_regions=12,
+                cascade_probe_variants=2,
+                bridge_fallback_enabled=bool(options.allow_fallback),
+                bridge_fallback_confidence_threshold=0.82,
+                bridge_fallback_score_threshold=0.98,
+                backend_cascade=bool(options.allow_fallback),
+                allow_fallback=bool(options.allow_fallback),
+                debug_raw_results=bool(debug_raw),
+                ocr_device=ocr_device,
+            )
         if mode == "max":
             max_workers = min(8, workers)
             if is_cuda:
