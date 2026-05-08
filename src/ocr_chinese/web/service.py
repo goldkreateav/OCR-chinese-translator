@@ -981,14 +981,15 @@ class ProjectService:
 
         def _query_gpus_free_vram_mb() -> list[dict]:
             """
-            Returns list like: [{"index": 0, "free_mb": 12345}, ...] sorted by free_mb desc.
+            Returns list like: [{"index": 0, "free_mb": 12345, "total_mb": 24576}, ...]
+            sorted by free_mb desc.
             Uses nvidia-smi when available. Safe to call on CPU-only hosts.
             """
             try:
                 proc = subprocess.run(
                     [
                         "nvidia-smi",
-                        "--query-gpu=index,memory.free",
+                        "--query-gpu=index,memory.free,memory.total",
                         "--format=csv,noheader,nounits",
                     ],
                     check=False,
@@ -1013,9 +1014,97 @@ class ProjectService:
                     free_mb = int(float(parts[1]))
                 except Exception:
                     continue
-                rows.append({"index": idx, "free_mb": free_mb})
+                total_mb = None
+                if len(parts) >= 3:
+                    try:
+                        total_mb = int(float(parts[2]))
+                    except Exception:
+                        total_mb = None
+                row: dict[str, Any] = {"index": idx, "free_mb": free_mb}
+                if total_mb is not None:
+                    row["total_mb"] = total_mb
+                rows.append(row)
             rows.sort(key=lambda r: int(r.get("free_mb", 0)), reverse=True)
             return rows
+
+        user_set_allocator_strategy = bool(str(os.getenv("FLAGS_allocator_strategy", "") or "").strip())
+        user_set_gpu_mem_limit = bool(str(os.getenv("FLAGS_gpu_memory_limit_mb", "") or "").strip())
+        user_set_gpu_mem_fraction = bool(str(os.getenv("FLAGS_fraction_of_gpu_memory_to_use", "") or "").strip())
+
+        def _apply_paddle_cuda_memory_cap(gpu_meta: dict | None) -> dict:
+            """
+            Apply Paddle CUDA allocator flags based on current free VRAM.
+            Cap policy: 40% of free VRAM on the selected GPU (most free GPU first).
+            """
+            info = {
+                "gpu_mem_cap_enabled": False,
+                "gpu_mem_cap_ratio": None,
+                "gpu_mem_cap_mb": None,
+                "gpu_mem_cap_source": "disabled",
+                "allocator_strategy": str(os.getenv("FLAGS_allocator_strategy", "") or ""),
+                "allocator_strategy_applied": False,
+                "gpu_mem_flag_applied": False,
+                "gpu_mem_flag_name": None,
+                "gpu_mem_flag_value": None,
+                "gpu_mem_flag_preserved": bool(user_set_gpu_mem_limit or user_set_gpu_mem_fraction),
+            }
+            if not isinstance(gpu_meta, dict):
+                return info
+            try:
+                free_mb = int(gpu_meta.get("free_mb", 0) or 0)
+            except Exception:
+                free_mb = 0
+            if free_mb <= 0:
+                info["gpu_mem_cap_source"] = "missing_free_vram"
+                return info
+
+            ratio_raw = str(os.getenv("OCR_PADDLE_GPU_FREE_MEM_RATIO", "0.4") or "0.4").strip()
+            try:
+                ratio = float(ratio_raw)
+            except Exception:
+                ratio = 0.4
+            ratio = max(0.05, min(0.95, ratio))
+            cap_mb = max(128, int(float(free_mb) * ratio))
+            info["gpu_mem_cap_enabled"] = True
+            info["gpu_mem_cap_ratio"] = ratio
+            info["gpu_mem_cap_mb"] = cap_mb
+            info["gpu_mem_cap_source"] = "40pct_free_vram"
+
+            if not user_set_allocator_strategy:
+                os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
+                info["allocator_strategy_applied"] = True
+            info["allocator_strategy"] = str(os.getenv("FLAGS_allocator_strategy", "") or "")
+
+            if user_set_gpu_mem_limit or user_set_gpu_mem_fraction:
+                info["gpu_mem_cap_source"] = "user_paddle_flags"
+                return info
+
+            # Prefer a hard MB cap to avoid large allocator pre-reservation.
+            os.environ["FLAGS_gpu_memory_limit_mb"] = str(cap_mb)
+            info["gpu_mem_flag_applied"] = True
+            info["gpu_mem_flag_name"] = "FLAGS_gpu_memory_limit_mb"
+            info["gpu_mem_flag_value"] = str(cap_mb)
+
+            # Some Paddle builds behave better with the fraction flag.
+            try:
+                total_mb = gpu_meta.get("total_mb") if isinstance(gpu_meta, dict) else None
+                if isinstance(total_mb, (int, float)) and float(total_mb) > 0.0:
+                    fraction = float(cap_mb) / float(total_mb)
+                    fraction = max(0.05, min(0.95, fraction))
+                    if not user_set_gpu_mem_fraction:
+                        os.environ["FLAGS_fraction_of_gpu_memory_to_use"] = str(fraction)
+                        info["gpu_mem_flag_name_fraction"] = "FLAGS_fraction_of_gpu_memory_to_use"
+                        info["gpu_mem_flag_value_fraction"] = fraction
+            except Exception:
+                pass
+            return info
+
+        # IMPORTANT: Apply allocator flags before importing/probing Paddle.
+        # Otherwise Paddle can already initialize CUDA memory pools with default settings.
+        if requested_device == "cuda":
+            pre_candidates = _query_gpus_free_vram_mb()
+            pre_best = pre_candidates[0] if pre_candidates else None
+            _ = _apply_paddle_cuda_memory_cap(pre_best)
 
         paddle_probe = self._probe_paddle_device_runtime()
         cuda_ok = bool(paddle_probe.get("paddle_cuda_available"))
@@ -1055,6 +1144,9 @@ class ProjectService:
 
         last_exc: Exception | None = None
         for attempt_i, (eff, paddle_dev, gpu_idx, gpu_meta) in enumerate(attempts):
+            mem_cap_info = (
+                _apply_paddle_cuda_memory_cap(gpu_meta) if eff == "cuda" else _apply_paddle_cuda_memory_cap(None)
+            )
             status["paddle_runtime"] = {
                 "requested_device": requested_device,
                 "effective_device": eff,
@@ -1066,6 +1158,16 @@ class ProjectService:
                 "gpu_candidates": gpu_candidates[:8],
                 "attempt_index": int(attempt_i),
                 "attempt_total": int(len(attempts)),
+                "allocator_strategy": mem_cap_info.get("allocator_strategy"),
+                "allocator_strategy_applied": bool(mem_cap_info.get("allocator_strategy_applied")),
+                "gpu_mem_cap_enabled": bool(mem_cap_info.get("gpu_mem_cap_enabled")),
+                "gpu_mem_cap_ratio": mem_cap_info.get("gpu_mem_cap_ratio"),
+                "gpu_mem_cap_mb": mem_cap_info.get("gpu_mem_cap_mb"),
+                "gpu_mem_cap_source": mem_cap_info.get("gpu_mem_cap_source"),
+                "gpu_mem_flag_applied": bool(mem_cap_info.get("gpu_mem_flag_applied")),
+                "gpu_mem_flag_name": mem_cap_info.get("gpu_mem_flag_name"),
+                "gpu_mem_flag_value": mem_cap_info.get("gpu_mem_flag_value"),
+                "gpu_mem_flag_preserved": bool(mem_cap_info.get("gpu_mem_flag_preserved")),
                 **paddle_probe,
             }
             status["updated_at"] = _utc_now()
@@ -1105,19 +1207,37 @@ class ProjectService:
                     "parallel_ocr": bool(getattr(rec_cfg, "parallel_ocr", False)),
                     "max_workers": int(getattr(rec_cfg, "max_workers", 1) or 1),
                     "init_timeout_s": init_timeout_s,
+                    "effective_device": eff,
+                    "selected_gpu_index": gpu_idx,
+                    "gpu_selected_free_mb": int(gpu_meta.get("free_mb", 0)) if isinstance(gpu_meta, dict) else None,
+                    "gpu_mem_cap_enabled": bool(mem_cap_info.get("gpu_mem_cap_enabled")),
+                    "gpu_mem_cap_ratio": mem_cap_info.get("gpu_mem_cap_ratio"),
+                    "gpu_mem_cap_mb": mem_cap_info.get("gpu_mem_cap_mb"),
+                    "gpu_mem_cap_source": mem_cap_info.get("gpu_mem_cap_source"),
+                    "gpu_mem_flag_name": mem_cap_info.get("gpu_mem_flag_name"),
+                    "gpu_mem_flag_value": mem_cap_info.get("gpu_mem_flag_value"),
+                    "gpu_mem_flag_preserved": bool(mem_cap_info.get("gpu_mem_flag_preserved")),
                 }
                 status["updated_at"] = _utc_now()
                 self._write_status(project_id, status)
 
-                init_err: list[str] = []
+                init_exc: Exception | None = None
 
                 def _init_models() -> None:
-                    OrientedTextDetector(config.detector)
-                    RegionTextRecognizer(rec_cfg)
+                    nonlocal init_exc
+                    try:
+                        OrientedTextDetector(config.detector)
+                        RegionTextRecognizer(rec_cfg)
+                    except Exception as exc:
+                        init_exc = exc
 
-                t_init = threading.Thread(target=_init_models, name=f"ocr-init-{project_id}", daemon=True)
+                t_init = threading.Thread(
+                    target=_init_models, name=f"ocr-init-{project_id}", daemon=True
+                )
                 t_init.start()
                 t_init.join(timeout=init_timeout_s if init_timeout_s > 0 else None)
+                if init_exc is not None:
+                    raise init_exc
                 if t_init.is_alive():
                     raise RuntimeError(
                         f"OCR init timeout after {int(init_timeout_s)}s (stage ocr_init). "
