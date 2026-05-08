@@ -1099,12 +1099,23 @@ class ProjectService:
                 pass
             return info
 
-        # IMPORTANT: Apply allocator flags before importing/probing Paddle.
-        # Otherwise Paddle can already initialize CUDA memory pools with default settings.
+        # IMPORTANT:
+        # - Apply allocator flags before importing/probing Paddle.
+        # - Additionally lock CUDA_VISIBLE_DEVICES to the selected "most free" GPU,
+        #   so Paddle can't accidentally select the other GPU in multi-GPU setups.
+        cuda_visible_devices_locked_to: int | None = None
+        pre_best_gpu_meta: dict | None = None
         if requested_device == "cuda":
             pre_candidates = _query_gpus_free_vram_mb()
-            pre_best = pre_candidates[0] if pre_candidates else None
-            _ = _apply_paddle_cuda_memory_cap(pre_best)
+            pre_best_gpu_meta = pre_candidates[0] if pre_candidates else None
+            if bool(getattr(options, "ocr_auto_select_gpu", True)) and isinstance(pre_best_gpu_meta, dict):
+                try:
+                    cuda_visible_devices_locked_to = int(pre_best_gpu_meta.get("index"))
+                    # After this, the locked GPU becomes GPU 0 inside the process.
+                    os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices_locked_to)
+                except Exception:
+                    cuda_visible_devices_locked_to = None
+            _ = _apply_paddle_cuda_memory_cap(pre_best_gpu_meta)
 
         paddle_probe = self._probe_paddle_device_runtime()
         cuda_ok = bool(paddle_probe.get("paddle_cuda_available"))
@@ -1126,6 +1137,11 @@ class ProjectService:
             best = gpu_candidates[0]
             idx = int(best.get("index"))
             gpu_attempts.append((f"gpu:{idx}", idx, best))
+
+        # If we locked CUDA_VISIBLE_DEVICES, restrict GPU attempts to just GPU 0
+        # (visible inside the process). This makes behavior deterministic.
+        if cuda_visible_devices_locked_to is not None and isinstance(pre_best_gpu_meta, dict):
+            gpu_attempts = [("gpu:0", cuda_visible_devices_locked_to, pre_best_gpu_meta)]
 
         attempts: list[tuple[str, str, int | None, dict | None]] = []
         # (effective_device, paddle_device, selected_gpu_index, gpu_meta)
