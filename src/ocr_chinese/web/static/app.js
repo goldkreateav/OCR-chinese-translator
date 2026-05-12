@@ -242,6 +242,8 @@ function StablePageViewer({
   selectedRegionId,
   viewerDragRef,
   rev,
+  everRenderedRef,
+  everRenderedKey,
 }) {
   const geom = (pageId && geomById?.[pageId]) || {};
   const safeView = view || getViewState(null, null);
@@ -308,8 +310,11 @@ function StablePageViewer({
   }, [fitScale]);
 
   const canRenderStable = Number.isFinite(Number(stableFitScale)) && Number(stableFitScale) > 0;
-  const hasEverRenderedRef = useRef(false);
-  if (canRenderStable) hasEverRenderedRef.current = true;
+  const everKey = String(everRenderedKey || "");
+  const hasEverRendered = Boolean(everRenderedRef?.current && everKey && everRenderedRef.current[everKey]);
+  if (canRenderStable && everRenderedRef?.current && everKey) {
+    everRenderedRef.current[everKey] = true;
+  }
 
   const transformStyle = useMemo(() => {
     const tx = Number.isFinite(safeView.panX) ? safeView.panX : 0;
@@ -577,13 +582,13 @@ function StablePageViewer({
         onPointerCancel=${endDrag}
         onWheel=${onWheel}
       >
-        ${!hasEverRenderedRef.current && !canRenderStable ? html`<div className="viewer-placeholder">Загрузка…</div>` : null}
+        ${!hasEverRendered && !canRenderStable ? html`<div className="viewer-placeholder">Загрузка…</div>` : null}
         <div
           className="viewer-transformLayer"
           style=${{
             ...(layerSizeStyle || {}),
             // Keep the layer in DOM to avoid white flashes during first layout.
-            ...(!hasEverRenderedRef.current && !canRenderStable ? { opacity: 0 } : null),
+            ...(!hasEverRendered && !canRenderStable ? { opacity: 0 } : null),
             ...transformStyle,
           }}
         >
@@ -804,6 +809,7 @@ function App() {
     justDraggedAt: 0,
     thresholdPx: 4,
   });
+  const viewerEverRenderedRef = useRef({}); // key -> true; prevents placeholder flashes on polling/layout jitter
 
   function patchViewState(isImport, pageId, patch) {
     if (!pageId) return;
@@ -1837,6 +1843,8 @@ function App() {
                           selectedRegionId=${selectedRegion?.region_id || ""}
                           viewerDragRef=${viewerDragRef}
                           rev=${Number(assetsRevByPage?.[currentPageId] || 0)}
+                          everRenderedRef=${viewerEverRenderedRef}
+                          everRenderedKey=${`w:${currentPageId}`}
                           onRegionClick=${(region) => {
                             setSelectedRegion(region);
                             setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
@@ -1904,6 +1912,8 @@ function App() {
                                     selectedRegionId=${selectedRegion?.region_id || ""}
                                     viewerDragRef=${viewerDragRef}
                                     rev=${Number(importAssetsRevByPage?.[pageId] || 0)}
+                                    everRenderedRef=${viewerEverRenderedRef}
+                                    everRenderedKey=${`i:${pageId}`}
                                     onRegionClick=${(region) => {
                                       setSelectedRegion(region);
                                       setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
