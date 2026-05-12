@@ -3,8 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import time
+from typing import Sequence
 
-from openai import APIError, BadRequestError, OpenAI  # type: ignore
+from openai import APIError, APITimeoutError, BadRequestError, OpenAI  # type: ignore
+
+try:
+    from httpx import ConnectTimeout, ReadTimeout  # type: ignore
+except Exception:  # pragma: no cover
+    ReadTimeout = type("ReadTimeout", (Exception,), {})
+    ConnectTimeout = type("ConnectTimeout", (Exception,), {})
 
 
 class TranslateError(RuntimeError):
@@ -54,6 +61,23 @@ class OpenAICompatConfig:
     # - page-context: enable_thinking=true
     # - per-region: enable_thinking=false
     llamacpp_chat_template_thinking: bool = False
+    # Per-HTTP-attempt read/connect timeouts for region translate (seconds). Retries with next value on timeout.
+    region_attempt_timeouts_s: tuple[float, ...] = (5.0, 10.0, 20.0, 40.0, 80.0)
+
+
+def _parse_attempt_timeouts(raw: str | None, *, fallback: Sequence[float]) -> tuple[float, ...]:
+    if not raw or not str(raw).strip():
+        return tuple(float(x) for x in fallback)
+    out: list[float] = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError:
+            continue
+    return tuple(out) if out else tuple(float(x) for x in fallback)
 
 
 def load_openai_compat_config() -> OpenAICompatConfig:
@@ -70,6 +94,10 @@ def load_openai_compat_config() -> OpenAICompatConfig:
     region_reasoning_effort = _env("TRANSLATE_REGION_REASONING_EFFORT", "none") or "none"
     page_reasoning_effort = _env("TRANSLATE_PAGE_REASONING_EFFORT", "high") or "high"
     llamacpp_chat_template_thinking = _env_bool("TRANSLATE_LLAMACPP_CHAT_TEMPLATE_THINKING", False)
+    region_attempt_timeouts_s = _parse_attempt_timeouts(
+        _env("TRANSLATE_REGION_ATTEMPT_TIMEOUTS_S", None),
+        fallback=(5.0, 10.0, 20.0, 40.0, 80.0),
+    )
     return OpenAICompatConfig(
         base_url=base_url,
         api_key=api_key,
@@ -83,6 +111,7 @@ def load_openai_compat_config() -> OpenAICompatConfig:
         region_reasoning_effort=region_reasoning_effort,
         page_reasoning_effort=page_reasoning_effort,
         llamacpp_chat_template_thinking=bool(llamacpp_chat_template_thinking),
+        region_attempt_timeouts_s=region_attempt_timeouts_s,
     )
 
 
@@ -159,6 +188,7 @@ def _chat_completions(
     max_tokens: int,
     reasoning_effort: str | None,
     enable_thinking: bool | None,
+    attempt_timeouts: Sequence[float] | None = None,
 ) -> str:
     """
     Use the official OpenAI SDK against an OpenAI-compatible gateway.
@@ -168,78 +198,93 @@ def _chat_completions(
     - Uses `reasoning_effort` only when requested. For per-region calls we default to None.
       For page-context calls we default to "high".
     - Falls back automatically if the gateway rejects `reasoning_effort`.
+    - If `attempt_timeouts` is set (per-region translation), each value is the HTTP client timeout for one try;
+      on timeout the next longer value is used (soft-locks / hung gateways).
     """
-    client = OpenAI(
-        api_key=cfg.api_key,
-        base_url=cfg.base_url,
-        timeout=float(cfg.timeout_s),
+    timeouts = (
+        [float(x) for x in attempt_timeouts]
+        if attempt_timeouts is not None and len(attempt_timeouts) > 0
+        else [float(cfg.timeout_s)]
     )
+    timeout_exc_types: tuple[type[BaseException], ...] = (APITimeoutError, ReadTimeout, ConnectTimeout)
+
+    def _build_kwargs() -> dict:
+        kwargs: dict = {
+            "model": cfg.model,
+            "temperature": float(cfg.temperature),
+            "stream": False,
+            "messages": messages,
+        }
+        if cfg.llamacpp_chat_template_thinking:
+            kwargs["max_tokens"] = int(max_tokens)
+        else:
+            kwargs["max_completion_tokens"] = int(max_tokens)
+        if cfg.llamacpp_chat_template_thinking and enable_thinking is not None:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
+            }
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+        return kwargs
 
     last_err: Exception | None = None
-    for attempt in range(max(1, int(cfg.max_retries) + 1)):
-        try:
-            kwargs: dict = {
-                "model": cfg.model,
-                "temperature": float(cfg.temperature),
-                "stream": False,
-                "messages": messages,
-            }
 
-            # OpenAI platform prefers max_completion_tokens; llama.cpp OpenAI-compat typically expects max_tokens.
-            if cfg.llamacpp_chat_template_thinking:
-                kwargs["max_tokens"] = int(max_tokens)
-            else:
-                # max_tokens is deprecated and not compatible with some reasoning models.
-                # Use max_completion_tokens (includes visible + reasoning tokens).
-                kwargs["max_completion_tokens"] = int(max_tokens)
-
-            if cfg.llamacpp_chat_template_thinking and enable_thinking is not None:
-                kwargs["extra_body"] = {
-                    "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
-                }
-
-            # Only pass this knob for the "full text" path unless explicitly configured.
-            if reasoning_effort is not None:
-                kwargs["reasoning_effort"] = reasoning_effort
+    for ti, timeout_s in enumerate(timeouts):
+        client = OpenAI(
+            api_key=cfg.api_key,
+            base_url=cfg.base_url,
+            timeout=float(timeout_s),
+        )
+        inner_timeout = False
+        for attempt in range(max(1, int(cfg.max_retries) + 1)):
+            kwargs = _build_kwargs()
             try:
-                resp = client.chat.completions.create(**kwargs)
-            except TypeError:
-                # Client doesn't accept reasoning_effort (or other kwarg); retry without it.
-                kwargs.pop("reasoning_effort", None)
-                resp = client.chat.completions.create(**kwargs)
-            except (BadRequestError, APIError):
-                # Some gateways accept the param name but reject value (e.g. "none")
-                # or only support a subset. Retry without reasoning_effort.
-                if "reasoning_effort" in kwargs:
+                try:
+                    resp = client.chat.completions.create(**kwargs)
+                except TypeError:
                     kwargs.pop("reasoning_effort", None)
                     resp = client.chat.completions.create(**kwargs)
-                else:
-                    raise
+                except (BadRequestError, APIError):
+                    if "reasoning_effort" in kwargs:
+                        kwargs.pop("reasoning_effort", None)
+                        resp = client.chat.completions.create(**kwargs)
+                    else:
+                        raise
 
-            content = _extract_chat_text(resp)
-            if not content:
-                try:
-                    choice0 = getattr(resp, "choices", [None])[0]
-                    msg0 = getattr(choice0, "message", None)
-                    reasoning0 = getattr(msg0, "reasoning_content", None)
-                except Exception:
-                    msg0 = None
-                    reasoning0 = None
-                if reasoning0:
-                    # Truncate to keep status/error payloads small.
-                    r = str(reasoning0)
-                    if len(r) > 800:
-                        r = r[:800] + "…"
-                    raise TranslateError(
-                        f"Empty message content in response (message={msg0!r}, reasoning_content={r!r})."
-                    )
-                raise TranslateError(f"Empty message content in response (message={msg0!r}).")
-            return content
-        except Exception as e:
-            last_err = e
-            if attempt >= max(1, int(cfg.max_retries) + 1):
+                content = _extract_chat_text(resp)
+                if not content:
+                    try:
+                        choice0 = getattr(resp, "choices", [None])[0]
+                        msg0 = getattr(choice0, "message", None)
+                        reasoning0 = getattr(msg0, "reasoning_content", None)
+                    except Exception:
+                        msg0 = None
+                        reasoning0 = None
+                    if reasoning0:
+                        r = str(reasoning0)
+                        if len(r) > 800:
+                            r = r[:800] + "…"
+                        raise TranslateError(
+                            f"Empty message content in response (message={msg0!r}, reasoning_content={r!r})."
+                        )
+                    raise TranslateError(f"Empty message content in response (message={msg0!r}).")
+                return content
+            except timeout_exc_types as e:
+                last_err = e
+                inner_timeout = True
                 break
-            time.sleep(min(2.5, 0.6 * (attempt + 1)))
+            except TranslateError:
+                raise
+            except Exception as e:
+                last_err = e
+                if attempt >= max(1, int(cfg.max_retries)):
+                    raise TranslateError(str(e)) from e
+                time.sleep(min(2.5, 0.6 * (attempt + 1)))
+
+        if inner_timeout:
+            time.sleep(min(2.0, 0.35 * (ti + 1)))
+            continue
+
     raise TranslateError(str(last_err) if last_err else "Translate failed.")
 
 
@@ -258,6 +303,7 @@ def translate_region_draft(cfg: OpenAICompatConfig, region_text_zh: str, *, targ
         max_tokens=int(cfg.region_max_tokens),
         reasoning_effort=cfg.region_reasoning_effort,
         enable_thinking=False,
+        attempt_timeouts=list(cfg.region_attempt_timeouts_s),
     )
 
 
@@ -313,5 +359,6 @@ def translate_region_refine(
         max_tokens=int(cfg.region_max_tokens),
         reasoning_effort=cfg.region_reasoning_effort,
         enable_thinking=False,
+        attempt_timeouts=list(cfg.region_attempt_timeouts_s),
     )
 

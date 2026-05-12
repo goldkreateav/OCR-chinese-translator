@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -32,7 +33,20 @@ def main() -> int:
             tw_opt = int(tw_raw)
         except (TypeError, ValueError):
             tw_opt = None
-    service = ProjectService(Path(root_dir), translate_workers=tw_opt)
+    try:
+        base = int(tw_opt if tw_opt is not None else (os.getenv("TRANSLATE_WORKERS", "5") or "5"))
+    except ValueError:
+        base = 5
+    base = max(1, min(5, base))
+    # While OCR runs in this process, uncapped translation threads compete with GPU/memory.
+    # Cap concurrent translation workers unless TRANSLATE_WORKERS_IN_GENERATION overrides (1..5).
+    try:
+        gen_cap = int(os.getenv("TRANSLATE_WORKERS_IN_GENERATION", "2") or "2")
+    except ValueError:
+        gen_cap = 2
+    gen_cap = max(1, min(5, gen_cap))
+    tw_final = max(1, min(base, gen_cap))
+    service = ProjectService(Path(root_dir), translate_workers=int(tw_final))
     options = GenerateOptions(**opts_raw)
 
     # Cooperative cancellation between processes:
