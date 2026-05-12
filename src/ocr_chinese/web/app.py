@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import subprocess
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -19,6 +20,18 @@ from .schemas import (
 from .service import GenerateOptions, ProjectService
 
 
+def _attachment_content_disposition(download_name: str) -> str:
+    """
+    Content-Disposition safe for non-ASCII filenames (Starlette requires latin-1 in headers).
+    ASCII fallback in filename=; UTF-8 percent-encoding in filename*= (RFC 5987).
+    """
+    dn = str(download_name or "").strip() or "download.ocpkg"
+    safe_ascii = "".join((c if 32 <= ord(c) < 127 and c not in '\\"' else "_") for c in dn)
+    safe_ascii = safe_ascii.strip() or "download.ocpkg"
+    quoted = quote(dn, safe="")
+    return f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{quoted}"
+
+
 def create_app(
     data_root: Path | None = None,
     default_render_backend: str = "auto",
@@ -30,11 +43,12 @@ def create_app(
     default_ocr_auto_select_gpu: bool = True,
     default_ocr_min_free_vram_mb: int = 1024,
     allow_fallback: bool = False,
+    translate_workers: int | None = None,
 ) -> FastAPI:
     package_dir = Path(__file__).resolve().parent
     static_dir = package_dir / "static"
     jobs_root = data_root or (Path.cwd() / "web_jobs")
-    service = ProjectService(jobs_root)
+    service = ProjectService(jobs_root, translate_workers=translate_workers)
 
     app = FastAPI(title="OCR Chinese Mask Web UI")
     app.state.default_render_backend = default_render_backend
@@ -133,7 +147,7 @@ def create_app(
         return Response(
             content=data,
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+            headers={"Content-Disposition": _attachment_content_disposition(download_name)},
         )
 
     @app.post("/api/import/ocpkg")

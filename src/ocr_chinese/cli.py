@@ -120,6 +120,16 @@ def build_parser() -> argparse.ArgumentParser:
             "By default web generation is strict Paddle-only and fails on Paddle errors."
         ),
     )
+    web_cmd.add_argument(
+        "--translate-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Max concurrent translation API requests (1..5). "
+            "Overrides TRANSLATE_WORKERS env when set; otherwise env or default 5."
+        ),
+    )
     return parser
 
 
@@ -190,6 +200,7 @@ def main() -> None:
             default_ocr_auto_select_gpu=not bool(args.no_ocr_auto_select_gpu),
             default_ocr_min_free_vram_mb=int(args.ocr_min_free_vram_mb or 1024),
             allow_fallback=args.allow_fallback,
+            translate_workers=args.translate_workers,
         )
         uvicorn.run(app, host=args.host, port=args.port)
         return

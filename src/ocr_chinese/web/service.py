@@ -33,6 +33,28 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _draft_translation_nonempty(entry: dict | None) -> bool:
+    """True if region has non-empty draft translation text."""
+    e = entry or {}
+    return bool(str(e.get("draft_translation") or "").strip())
+
+
+def _infer_status_draft(entry: dict | None) -> str:
+    """
+    Human-facing status for API/UI when status_draft is missing or inconsistent
+    (e.g. text imported without status_draft).
+    """
+    e = entry or {}
+    sd_raw = e.get("status_draft")
+    if sd_raw is not None and str(sd_raw).strip():
+        return str(sd_raw).strip()
+    if _draft_translation_nonempty(e):
+        return "done"
+    if not e:
+        return "pending"
+    return "unknown"
+
+
 def _read_json_safe(path: Path, default: dict | list | None = None) -> Any:
     """
     Best-effort JSON loader.
@@ -88,9 +110,10 @@ class GenerateOptions:
 
 
 class ProjectService:
-    def __init__(self, root_dir: Path):
+    def __init__(self, root_dir: Path, *, translate_workers: int | None = None):
         self.root_dir = root_dir
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._translate_workers_limit = self._resolve_translate_workers(translate_workers)
         self._translate_cfg: OpenAICompatConfig | None = None
         self._translate_queue: "queue.Queue[dict]" = queue.Queue()
         self._translate_threads: list[threading.Thread] = []
@@ -108,6 +131,25 @@ class ProjectService:
         self._generate_lock = threading.Lock()
         self._regions_lock = threading.Lock()
         self._regions_page_locks: dict[str, threading.Lock] = {}
+
+    @staticmethod
+    def _resolve_translate_workers(explicit: int | None) -> int:
+        """
+        Max concurrent translation API calls (one blocking request per worker thread).
+        Cap at 5 to match typical upstream limits; CLI/env choose 1..5.
+        """
+        if explicit is not None:
+            try:
+                w = int(explicit)
+            except (TypeError, ValueError):
+                w = 5
+        else:
+            raw = os.getenv("TRANSLATE_WORKERS", "5") or "5"
+            try:
+                w = int(raw)
+            except ValueError:
+                w = 5
+        return max(1, min(5, w))
 
     def _cancel_flag_path(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "output" / "cancel.flag"
@@ -333,8 +375,7 @@ class ProjectService:
         if self._translate_started:
             return
         self._translate_started = True
-        workers = int(os.getenv("TRANSLATE_WORKERS", "2") or "2")
-        workers = max(1, min(6, workers))
+        workers = int(self._translate_workers_limit)
         for i in range(workers):
             t = threading.Thread(target=self._translate_worker_loop, name=f"translate-worker-{i}", daemon=True)
             t.start()
@@ -1670,14 +1711,17 @@ class ProjectService:
             entry = items.get(rid) or {}
             sd = str(entry.get("status_draft") or "").strip().lower()
 
-            if not sd:
-                draft_pending += 1
-            elif sd == "done":
-                draft_done += 1
-            elif sd == "error":
+            if sd == "error":
                 draft_err += 1
             elif sd == "running":
                 draft_running += 1
+            elif sd == "done":
+                draft_done += 1
+            elif _draft_translation_nonempty(entry):
+                # Text present but status missing (import/manual edit) — treat as done for progress.
+                draft_done += 1
+            elif sd in ("", "pending"):
+                draft_pending += 1
             else:
                 draft_unknown += 1
         return {
@@ -1699,7 +1743,7 @@ class ProjectService:
             "region_id": region_id,
             "lang": lang,
             "draft_translation": entry.get("draft_translation"),
-            "status_draft": entry.get("status_draft") or ("pending" if not entry else "unknown"),
+            "status_draft": _infer_status_draft(entry),
             "error_draft": entry.get("error_draft"),
             "updated_at": entry.get("updated_at"),
         }
@@ -1716,7 +1760,7 @@ class ProjectService:
             out[str(region_id)] = {
                 "region_id": str(region_id),
                 "draft_translation": e.get("draft_translation"),
-                "status_draft": e.get("status_draft") or ("pending" if not e else "unknown"),
+                "status_draft": _infer_status_draft(e),
                 "error_draft": e.get("error_draft"),
                 "updated_at": e.get("updated_at"),
             }
