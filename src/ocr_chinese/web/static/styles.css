@@ -141,6 +141,11 @@ body,
   filter: drop-shadow(0 0 0.55rem rgba(255, 200, 5, 0.45));
 }
 
+/* Fallback / extra emphasis when server marks region as translation-in-progress (inline style usually wins). */
+.region-polygon.is-translating {
+  filter: drop-shadow(0 0 0.4rem rgba(139, 92, 246, 0.4));
+}
+
 .skeleton {
   position: relative;
   overflow: hidden;

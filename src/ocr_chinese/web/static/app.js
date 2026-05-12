@@ -636,20 +636,23 @@ function StablePageViewer({
               const isTranslating =
                 Array.isArray(translatingRegionIds) &&
                 translatingRegionIds.some((x) => String(x) === rid);
-              const strokeUse = isSelected
-                ? style.stroke
-                : isTranslating
-                  ? "rgba(139, 92, 246, 0.38)"
-                  : style.stroke;
-              const strokeW = isSelected ? "2.5" : isTranslating ? "1.6" : "1";
+              // Inline style beats stylesheet (.region-polygon { stroke-width }) so translation ring stays visible.
+              const translateHighlightStyle = isTranslating
+                ? {
+                    stroke: "rgba(139, 92, 246, 0.78)",
+                    strokeWidth: 2.4,
+                    vectorEffect: "non-scaling-stroke",
+                  }
+                : undefined;
               return html`
                 <polygon
                   key=${region.region_id}
                   points=${pointsToAttr(region.polygon)}
-                  className=${`region-polygon ${isSelected ? "is-selected" : ""} ${isTranslating && !isSelected ? "is-translating" : ""}`}
+                  className=${`region-polygon ${isSelected ? "is-selected" : ""} ${isTranslating ? "is-translating" : ""}`}
                   fill=${style.fill}
-                  stroke=${strokeUse}
-                  strokeWidth=${strokeW}
+                  stroke=${isTranslating ? undefined : style.stroke}
+                  strokeWidth=${isTranslating ? undefined : isSelected ? "2.5" : "1"}
+                  style=${translateHighlightStyle}
                   onClick=${() => {
                     const st = viewerDragRef.current;
                     if (st?.active) return;
@@ -768,6 +771,8 @@ function App() {
   const [runtimeInfo, setRuntimeInfo] = useState(null);
   const [translationByPage, setTranslationByPage] = useState({});
   const translationByPageRef = useRef({});
+  /** Last known OCR region counts per page (progress_pages may drop after OCR completes). */
+  const ocrRegionsMemoryRef = useRef({});
   const [pageTranslationsById, setPageTranslationsById] = useState({}); // pageId -> {items: {region_id -> entry}}
   const [assetsByPage, setAssetsByPage] = useState({});
   const [assetsRevByPage, setAssetsRevByPage] = useState({}); // pageId -> number; bumps only when image/mask url changes
@@ -897,6 +902,19 @@ function App() {
   const stage = formatStage(statusPayload?.stage);
   const statusState = statusPayload?.status || "idle";
 
+  const rememberedOcrRegionsByPage = useMemo(() => {
+    const acc = { ...(ocrRegionsMemoryRef.current || {}) };
+    for (const [pid, o] of Object.entries(progressPages || {})) {
+      const tr = Number(o?.total_regions || 0);
+      if (Number.isFinite(tr) && tr > 0) {
+        const key = String(pid);
+        acc[key] = Math.max(Number(acc[key] || 0), tr);
+      }
+    }
+    ocrRegionsMemoryRef.current = acc;
+    return acc;
+  }, [progressPages]);
+
   const derivedPageIds = useMemo(() => {
     const fromPages = Array.isArray(pages) ? pages.filter(Boolean) : [];
     if (fromPages.length > 0) return fromPages;
@@ -936,6 +954,11 @@ function App() {
   }, [translationByPage]);
 
   const translatingRegionIds = useMemo(() => {
+    const st = translationByPage[currentPageId];
+    const fromStatus = Array.isArray(st?.draft_running_region_ids)
+      ? st.draft_running_region_ids.map((x) => String(x))
+      : [];
+    if (fromStatus.length > 0) return fromStatus;
     const payload = pageTranslationsById[currentPageId];
     const items = payload?.items || {};
     const ids = [];
@@ -943,7 +966,7 @@ function App() {
       if (String(entry?.status_draft || "").toLowerCase() === "running") ids.push(rid);
     }
     return ids;
-  }, [pageTranslationsById, currentPageId]);
+  }, [translationByPage, pageTranslationsById, currentPageId]);
 
   function syncWorkspaceGeom(img = workspaceImageRef.current) {
     if (!currentPageId || !img) return;
@@ -1537,6 +1560,7 @@ function App() {
       const t = translationByPage[pageId] || {};
       const ocrCur = Number(o.current_region || 0);
       const ocrTotRaw = Number(o.total_regions || 0);
+      const rememberedOcr = Number(rememberedOcrRegionsByPage[pageId] || 0);
       const ocrTot = ocrTotRaw > 0 ? ocrTotRaw : Number(avgRegionsPerPage || 0);
       const draftDone = Number(t.draft_done || 0);
       const draftError = Number(t.draft_error || 0);
@@ -1549,10 +1573,14 @@ function App() {
           ? regionsTotalRaw
           : ocrTotRaw > 0
             ? ocrTotRaw
-            : Number(regionsTotal || 0);
+            : rememberedOcr > 0
+              ? rememberedOcr
+              : Number(regionsTotal || 0);
       const translateShow =
         translateHasRealData ||
         ocrTotRaw > 0 ||
+        rememberedOcr > 0 ||
+        regionsTotalRaw > 0 ||
         translatePipelineActive ||
         String(statusPayload?.translation?.state || "").toLowerCase() === "running";
 
@@ -1609,7 +1637,15 @@ function App() {
         pageEta,
       };
     });
-  }, [derivedPageIds, progressPages, translationByPage, avgRegionsPerPage, statusPayload?.stage, statusPayload?.translation?.state]);
+  }, [
+    derivedPageIds,
+    progressPages,
+    rememberedOcrRegionsByPage,
+    translationByPage,
+    avgRegionsPerPage,
+    statusPayload?.stage,
+    statusPayload?.translation?.state,
+  ]);
 
   const isBusy = generateInFlight || statusState === "running";
 

@@ -1706,6 +1706,7 @@ class ProjectService:
         region_ids = [str(r.get("region_id") or "") for r in regions if str(r.get("region_id") or "").strip()]
 
         draft_done = draft_err = draft_running = draft_pending = draft_unknown = 0
+        draft_running_region_ids: list[str] = []
 
         for rid in region_ids:
             entry = items.get(rid) or {}
@@ -1715,6 +1716,7 @@ class ProjectService:
                 draft_err += 1
             elif sd == "running":
                 draft_running += 1
+                draft_running_region_ids.append(str(rid))
             elif sd == "done":
                 draft_done += 1
             elif _draft_translation_nonempty(entry):
@@ -1731,6 +1733,7 @@ class ProjectService:
             "draft_done": int(draft_done),
             "draft_error": int(draft_err),
             "draft_running": int(draft_running),
+            "draft_running_region_ids": draft_running_region_ids,
             "draft_pending": int(draft_pending),
             "draft_unknown": int(draft_unknown),
         }
