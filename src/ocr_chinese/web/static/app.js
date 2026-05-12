@@ -203,6 +203,453 @@ function countMissingTranslations(report) {
   return missing;
 }
 
+const VIEW_MIN_SCALE = 0.25;
+const VIEW_MAX_SCALE = 6.0;
+
+function clampScale(v) {
+  if (!Number.isFinite(v)) return 1;
+  return Math.max(VIEW_MIN_SCALE, Math.min(VIEW_MAX_SCALE, v));
+}
+
+function getViewState(map, pageId) {
+  const base = map?.[pageId] || null;
+  return {
+    rotSteps: Number.isFinite(base?.rotSteps) ? ((base.rotSteps % 4) + 4) % 4 : 0,
+    scale: clampScale(Number(base?.scale || 1)),
+    panX: Number.isFinite(base?.panX) ? base.panX : 0,
+    panY: Number.isFinite(base?.panY) ? base.panY : 0,
+  };
+}
+
+function StablePageViewer({
+  isImport,
+  pageId,
+  title,
+  view,
+  onPatchViewState,
+  imageUrl,
+  imageAlt,
+  imageRef,
+  onImageLoad,
+  maskUrl,
+  maskOk,
+  onMaskLoad,
+  onMaskError,
+  regions,
+  geomById,
+  setGeomById,
+  onRegionClick,
+  selectedRegionId,
+  viewerDragRef,
+  rev,
+}) {
+  const geom = (pageId && geomById?.[pageId]) || {};
+  const safeView = view || getViewState(null, null);
+  const rotDeg = safeView.rotSteps * 90;
+
+  const surfaceRef = useRef(null);
+  const [surfaceSize, setSurfaceSize] = useState({ w: 0, h: 0 });
+
+  useEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return undefined;
+    const sync = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.max(0, Math.round(Number(r.width || 0)));
+      const h = Math.max(0, Math.round(Number(r.height || 0)));
+      setSurfaceSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    sync();
+    let ro = null;
+    if (typeof window.ResizeObserver === "function") {
+      ro = new window.ResizeObserver(() => sync());
+      ro.observe(el);
+    }
+    window.addEventListener("resize", sync);
+    return () => {
+      window.removeEventListener("resize", sync);
+      if (ro) ro.disconnect();
+    };
+  }, []);
+
+  const naturalW = Number(geom?.w || 0);
+  const naturalH = Number(geom?.h || 0);
+  const rotStepsNorm = Number.isFinite(safeView.rotSteps) ? ((safeView.rotSteps % 4) + 4) % 4 : 0;
+  const isRotOdd = rotStepsNorm % 2 === 1;
+  const fitW = isRotOdd ? naturalH : naturalW;
+  const fitH = isRotOdd ? naturalW : naturalH;
+
+  const lastFitScaleRef = useRef(null);
+  const fitScaleRaw = useMemo(() => {
+    if (!(fitW > 0 && fitH > 0)) return null;
+    const sw = Number(surfaceSize.w || 0);
+    const sh = Number(surfaceSize.h || 0);
+    if (!(sw > 0 && sh > 0)) return null;
+    const v = Math.min(sw / fitW, sh / fitH);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  }, [surfaceSize.w, surfaceSize.h, fitW, fitH]);
+
+  const fitScale = useMemo(() => {
+    const v = Number(fitScaleRaw);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  }, [fitScaleRaw]);
+
+  // Avoid one-frame "flash" when fitScale briefly becomes invalid during layout/repaint.
+  const stableFitScale = useMemo(() => {
+    const v = Number(fitScale);
+    if (Number.isFinite(v) && v > 0) return v;
+    const prev = Number(lastFitScaleRef.current);
+    return Number.isFinite(prev) && prev > 0 ? prev : null;
+  }, [fitScale]);
+
+  useEffect(() => {
+    const v = Number(fitScale);
+    if (Number.isFinite(v) && v > 0) lastFitScaleRef.current = v;
+  }, [fitScale]);
+
+  const canRenderStable = Number.isFinite(Number(stableFitScale)) && Number(stableFitScale) > 0;
+  const hasEverRenderedRef = useRef(false);
+  if (canRenderStable) hasEverRenderedRef.current = true;
+
+  const transformStyle = useMemo(() => {
+    const tx = Number.isFinite(safeView.panX) ? safeView.panX : 0;
+    const ty = Number.isFinite(safeView.panY) ? safeView.panY : 0;
+    const baseFit = canRenderStable ? Number(stableFitScale) : 1;
+    const sc = clampScale(safeView.scale) * baseFit;
+    return {
+      // translate3d helps avoid intermittent compositor repaint issues on large images.
+      transform: `translate3d(${tx}px, ${ty}px, 0) scale(${sc}) rotate(${rotDeg}deg)`,
+      transformOrigin: "0 0",
+    };
+  }, [safeView.panX, safeView.panY, safeView.scale, rotDeg, stableFitScale, canRenderStable]);
+
+  const layerSizeStyle = useMemo(() => {
+    return naturalW > 0 && naturalH > 0 ? { width: `${naturalW}px`, height: `${naturalH}px` } : null;
+  }, [naturalW, naturalH]);
+
+  const viewBox = useMemo(() => {
+    return geom?.w && geom?.h ? `0 0 ${geom.w} ${geom.h}` : inferViewBox(regions || []);
+  }, [geom?.w, geom?.h, regions]);
+
+  const stableImageSrc = imageUrl ? `${imageUrl}${String(imageUrl).includes("?") ? "&" : "?"}v=${rev}` : "";
+  const stableMaskSrc = maskUrl ? `${maskUrl}${String(maskUrl).includes("?") ? "&" : "?"}v=${rev}` : "";
+
+  const startDrag = (e) => {
+    if (!pageId) return;
+    if (!e.isPrimary) return;
+    if (e.button !== 0) return;
+    // Allow clicking interactive overlay elements (regions) without starting a pan drag.
+    const t = e.target;
+    if (t && typeof t.closest === "function") {
+      if (t.closest(".region-polygon")) return;
+      if (t.closest("button,a,input,textarea,select")) return;
+    }
+    try {
+      e.currentTarget?.setPointerCapture?.(e.pointerId);
+    } catch (_) {}
+    viewerDragRef.current = {
+      active: true,
+      pageId,
+      isImport: Boolean(isImport),
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startPanX: safeView.panX,
+      startPanY: safeView.panY,
+      moved: false,
+      justDraggedAt: Number(viewerDragRef.current?.justDraggedAt || 0),
+      thresholdPx: viewerDragRef.current?.thresholdPx || 4,
+    };
+  };
+
+  const moveDrag = (e) => {
+    const st = viewerDragRef.current;
+    if (
+      !st?.active ||
+      st.pageId !== pageId ||
+      Boolean(st.isImport) !== Boolean(isImport) ||
+      st.pointerId !== e.pointerId
+    )
+      return;
+    const dx = e.clientX - st.startClientX;
+    const dy = e.clientY - st.startClientY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > Number(st.thresholdPx || 4)) st.moved = true;
+    onPatchViewState((cur) => ({ ...cur, panX: st.startPanX + dx, panY: st.startPanY + dy }));
+    e.preventDefault();
+  };
+
+  const endDrag = (e) => {
+    const st = viewerDragRef.current;
+    if (
+      !st?.active ||
+      st.pageId !== pageId ||
+      Boolean(st.isImport) !== Boolean(isImport) ||
+      (e && st.pointerId != null && e.pointerId != null && st.pointerId !== e.pointerId)
+    )
+      return;
+    const wasMoved = Boolean(st.moved);
+    viewerDragRef.current = {
+      ...st,
+      active: false,
+      pointerId: null,
+      moved: false,
+      justDraggedAt: wasMoved ? Date.now() : Number(st.justDraggedAt || 0),
+    };
+    try {
+      surfaceRef.current?.releasePointerCapture?.(st.pointerId);
+    } catch (_) {}
+    e?.preventDefault?.();
+  };
+
+  useEffect(() => {
+    const onBlur = () => {
+      const st = viewerDragRef.current;
+      if (!st?.active) return;
+      if (st.pageId !== pageId || Boolean(st.isImport) !== Boolean(isImport)) return;
+      try {
+        surfaceRef.current?.releasePointerCapture?.(st.pointerId);
+      } catch (_) {}
+      viewerDragRef.current = { ...st, active: false, pointerId: null, moved: false };
+    };
+    const onUp = (e) => {
+      const st = viewerDragRef.current;
+      if (!st?.active) return;
+      if (st.pageId !== pageId || Boolean(st.isImport) !== Boolean(isImport)) return;
+      if (st.pointerId != null && e?.pointerId != null && st.pointerId !== e.pointerId) return;
+      viewerDragRef.current = { ...st, active: false, pointerId: null, moved: false };
+      try {
+        surfaceRef.current?.releasePointerCapture?.(st.pointerId);
+      } catch (_) {}
+    };
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [pageId, isImport, viewerDragRef]);
+
+  const bumpScale = (factor, clientPoint = null) => {
+    if (!pageId) return;
+    const el = surfaceRef.current;
+    const rect = el?.getBoundingClientRect?.() || null;
+    const cx = rect ? (clientPoint && Number.isFinite(clientPoint.x) ? clientPoint.x - rect.left : rect.width / 2) : 0;
+    const cy = rect ? (clientPoint && Number.isFinite(clientPoint.y) ? clientPoint.y - rect.top : rect.height / 2) : 0;
+
+    onPatchViewState((cur) => {
+      const prevScale = clampScale(cur.scale);
+      const nextScale = clampScale(prevScale * factor);
+      try {
+        console.log("[viewer]", {
+          action: "zoom",
+          pageId,
+          isImport: !!isImport,
+          factor,
+          cursor: { x: cx, y: cy },
+          prev: { scale: prevScale, panX: cur.panX, panY: cur.panY, rotSteps: cur.rotSteps },
+          next: { scale: nextScale },
+        });
+      } catch (_) {}
+      if (nextScale === prevScale) return cur;
+      const k = nextScale / prevScale;
+      const nextPanX = cx - (cx - cur.panX) * k;
+      const nextPanY = cy - (cy - cur.panY) * k;
+      return { ...cur, scale: nextScale, panX: nextPanX, panY: nextPanY };
+    });
+  };
+
+  const onWheel = (e) => {
+    if (!pageId) return;
+    const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+    try {
+      console.log("[viewer]", { action: "wheelZoom", pageId, isImport: !!isImport, deltaY: e.deltaY, factor });
+    } catch (_) {}
+    bumpScale(factor, { x: e.clientX, y: e.clientY });
+    e.preventDefault(); // prevent page scroll while zooming inside viewer
+  };
+
+  const resetView = () => {
+    try {
+      console.log("[viewer]", { action: "reset", pageId, isImport: !!isImport });
+    } catch (_) {}
+    return onPatchViewState({ rotSteps: 0, scale: 1, panX: 0, panY: 0 });
+  };
+
+  const rotateKeepingCenter = (dir) => {
+    if (!pageId) return;
+    try {
+      console.log("[viewer]", { action: "rotate", pageId, isImport: !!isImport, dir });
+    } catch (_) {}
+    const el = surfaceRef.current;
+    const rect = el?.getBoundingClientRect?.() || null;
+    const cx = rect ? rect.width / 2 : 0;
+    const cy = rect ? rect.height / 2 : 0;
+    const scaleTotal = clampScale(safeView.scale) * (Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1);
+    if (!(scaleTotal > 0)) {
+      onPatchViewState((cur) => ({ ...cur, rotSteps: (cur.rotSteps + dir + 4) % 4 }));
+      return;
+    }
+
+    onPatchViewState((cur) => {
+      const rot0 = ((Number(cur.rotSteps) % 4) + 4) % 4;
+      const rot1 = (rot0 + dir + 4) % 4;
+      const panX0 = Number.isFinite(cur.panX) ? cur.panX : 0;
+      const panY0 = Number.isFinite(cur.panY) ? cur.panY : 0;
+
+      const dx = (cx - panX0) / scaleTotal;
+      const dy = (cy - panY0) / scaleTotal;
+
+      // Convert screen-center back to content coords by applying inverse rotation (multiples of 90°).
+      let px = dx;
+      let py = dy;
+      if (rot0 === 1) {
+        px = dy;
+        py = -dx;
+      } else if (rot0 === 2) {
+        px = -dx;
+        py = -dy;
+      } else if (rot0 === 3) {
+        px = -dy;
+        py = dx;
+      }
+
+      // Apply new rotation to that same content point, then choose pan so it stays at screen center.
+      let rx = px;
+      let ry = py;
+      if (rot1 === 1) {
+        rx = -py;
+        ry = px;
+      } else if (rot1 === 2) {
+        rx = -px;
+        ry = -py;
+      } else if (rot1 === 3) {
+        rx = py;
+        ry = -px;
+      }
+
+      const nextPanX = cx - rx * scaleTotal;
+      const nextPanY = cy - ry * scaleTotal;
+
+      return { ...cur, rotSteps: rot1, panX: nextPanX, panY: nextPanY };
+    });
+  };
+
+  const rotateLeft = () => rotateKeepingCenter(-1);
+  const rotateRight = () => rotateKeepingCenter(1);
+
+  const isDragging = Boolean(viewerDragRef.current?.active && viewerDragRef.current?.pageId === pageId);
+
+  return html`
+    <div>
+      <div className="viewer-toolbar">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-sollers-gray">${title || "Viewer"}</span>
+          <span className="mono text-xs text-sollers-gray">${Math.round(clampScale(Number(safeView.scale || 1)) * 100)}% | ${rotDeg}°</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${() => bumpScale(1 / 1.15)}>
+            −
+          </button>
+          <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${() => bumpScale(1.15)}>
+            +
+          </button>
+          <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${rotateLeft}>
+            ⟲ 90°
+          </button>
+          <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${rotateRight}>
+            ⟳ 90°
+          </button>
+          <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${resetView}>
+            Сброс
+          </button>
+        </div>
+      </div>
+
+      <div
+        className=${`viewer-surface ${isDragging ? "is-dragging" : ""}`}
+        ref=${surfaceRef}
+        onPointerDown=${startDrag}
+        onPointerMove=${moveDrag}
+        onPointerUp=${endDrag}
+        onPointerCancel=${endDrag}
+        onWheel=${onWheel}
+      >
+        ${!hasEverRenderedRef.current && !canRenderStable ? html`<div className="viewer-placeholder">Загрузка…</div>` : null}
+        <div
+          className="viewer-transformLayer"
+          style=${{
+            ...(layerSizeStyle || {}),
+            // Keep the layer in DOM to avoid white flashes during first layout.
+            ...(!hasEverRenderedRef.current && !canRenderStable ? { opacity: 0 } : null),
+            ...transformStyle,
+          }}
+        >
+          <img
+            src=${stableImageSrc}
+            alt=${imageAlt || "Rendered page"}
+            className="viewer-page"
+            style=${layerSizeStyle}
+            ref=${imageRef}
+            onLoad=${(e) => {
+              try {
+                onImageLoad?.(e);
+              } finally {
+                try {
+                  const img = e.currentTarget;
+                  const nextGeom = readImageGeom(img);
+                  if (pageId && nextGeom) setGeomById((prev) => upsertGeom(prev, pageId, nextGeom));
+                } catch (_) {}
+              }
+            }}
+            draggable="false"
+          />
+
+          ${maskUrl && maskOk !== false
+            ? html`
+                <img
+                  src=${stableMaskSrc}
+                  alt="Mask (preload)"
+                  className="viewer-maskPreload"
+                  style=${layerSizeStyle}
+                  onLoad=${onMaskLoad}
+                  onError=${onMaskError}
+                  draggable="false"
+                />
+              `
+            : null}
+
+          <svg className="viewer-overlay" style=${layerSizeStyle} viewBox=${viewBox} preserveAspectRatio="none">
+            ${(regions || []).map((region) => {
+              const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
+              const style = getPolygonStyle(conf);
+              const isSelected = String(selectedRegionId || "") === String(region?.region_id || "");
+              return html`
+                <polygon
+                  key=${region.region_id}
+                  points=${pointsToAttr(region.polygon)}
+                  className=${`region-polygon ${isSelected ? "is-selected" : ""}`}
+                  fill=${style.fill}
+                  stroke=${style.stroke}
+                  onClick=${() => {
+                    const st = viewerDragRef.current;
+                    if (st?.active) return;
+                    const justDraggedAt = Number(st?.justDraggedAt || 0);
+                    if (justDraggedAt > 0 && Date.now() - justDraggedAt < 240) return;
+                    onRegionClick?.(region);
+                  }}
+                />
+              `;
+            })}
+          </svg>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function useEtaModel() {
   const refs = useRef({
     ocr: {},
@@ -357,24 +804,6 @@ function App() {
     justDraggedAt: 0,
     thresholdPx: 4,
   });
-
-  const VIEW_MIN_SCALE = 0.25;
-  const VIEW_MAX_SCALE = 6.0;
-
-  function clampScale(v) {
-    if (!Number.isFinite(v)) return 1;
-    return Math.max(VIEW_MIN_SCALE, Math.min(VIEW_MAX_SCALE, v));
-  }
-
-  function getViewState(map, pageId) {
-    const base = map?.[pageId] || null;
-    return {
-      rotSteps: Number.isFinite(base?.rotSteps) ? ((base.rotSteps % 4) + 4) % 4 : 0,
-      scale: clampScale(Number(base?.scale || 1)),
-      panX: Number.isFinite(base?.panX) ? base.panX : 0,
-      panY: Number.isFinite(base?.panY) ? base.panY : 0,
-    };
-  }
 
   function patchViewState(isImport, pageId, patch) {
     if (!pageId) return;
@@ -1123,443 +1552,6 @@ function App() {
     });
   }, [derivedPageIds, progressPages, translationByPage, avgRegionsPerPage]);
 
-  function PageViewer({
-    isImport,
-    pageId,
-    title,
-    imageUrl,
-    imageAlt,
-    imageRef,
-    onImageLoad,
-    maskUrl,
-    maskOk,
-    maskStyle,
-    onMaskLoad,
-    onMaskError,
-    regions,
-    geomById,
-    setGeomById,
-    onRegionClick,
-  }) {
-    const geom = (pageId && geomById?.[pageId]) || {};
-    const view = getViewState(isImport ? importViewByPage : viewByPage, pageId);
-    const rotDeg = view.rotSteps * 90;
-
-    const surfaceRef = useRef(null);
-    const [surfaceSize, setSurfaceSize] = useState({ w: 0, h: 0 });
-
-    useEffect(() => {
-      const el = surfaceRef.current;
-      if (!el) return undefined;
-      const sync = () => {
-        const r = el.getBoundingClientRect();
-        const w = Math.max(0, Math.round(Number(r.width || 0)));
-        const h = Math.max(0, Math.round(Number(r.height || 0)));
-        setSurfaceSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-      };
-      sync();
-      let ro = null;
-      if (typeof window.ResizeObserver === "function") {
-        ro = new window.ResizeObserver(() => sync());
-        ro.observe(el);
-      }
-      window.addEventListener("resize", sync);
-      return () => {
-        window.removeEventListener("resize", sync);
-        if (ro) ro.disconnect();
-      };
-    }, []);
-
-    const naturalW = Number(geom?.w || 0);
-    const naturalH = Number(geom?.h || 0);
-    const rotStepsNorm = Number.isFinite(view.rotSteps) ? ((view.rotSteps % 4) + 4) % 4 : 0;
-    const isRotOdd = rotStepsNorm % 2 === 1;
-    const fitW = isRotOdd ? naturalH : naturalW;
-    const fitH = isRotOdd ? naturalW : naturalH;
-
-    const lastFitScaleRef = useRef(null);
-    const fitScaleRaw = useMemo(() => {
-      if (!(fitW > 0 && fitH > 0)) return null;
-      const sw = Number(surfaceSize.w || 0);
-      const sh = Number(surfaceSize.h || 0);
-      if (!(sw > 0 && sh > 0)) return null;
-      const v = Math.min(sw / fitW, sh / fitH);
-      return Number.isFinite(v) && v > 0 ? v : null;
-    }, [surfaceSize.w, surfaceSize.h, fitW, fitH]);
-
-    const fitScale = useMemo(() => {
-      const v = Number(fitScaleRaw);
-      return Number.isFinite(v) && v > 0 ? v : null;
-    }, [fitScaleRaw]);
-
-    // Avoid one-frame "flash" when fitScale briefly becomes invalid during layout/repaint.
-    const stableFitScale = useMemo(() => {
-      const v = Number(fitScale);
-      if (Number.isFinite(v) && v > 0) return v;
-      const prev = Number(lastFitScaleRef.current);
-      return Number.isFinite(prev) && prev > 0 ? prev : null;
-    }, [fitScale]);
-
-    useEffect(() => {
-      const v = Number(fitScale);
-      if (Number.isFinite(v) && v > 0) lastFitScaleRef.current = v;
-    }, [fitScale]);
-
-    const canRenderStable = Number.isFinite(Number(stableFitScale)) && Number(stableFitScale) > 0;
-    const hasEverRenderedRef = useRef(false);
-    if (canRenderStable) hasEverRenderedRef.current = true;
-
-    const transformStyle = useMemo(() => {
-      const tx = Number.isFinite(view.panX) ? view.panX : 0;
-      const ty = Number.isFinite(view.panY) ? view.panY : 0;
-      const baseFit = canRenderStable ? Number(stableFitScale) : 1;
-      const sc = clampScale(view.scale) * baseFit;
-      return {
-        // translate3d helps avoid intermittent compositor repaint issues on large images.
-        transform: `translate3d(${tx}px, ${ty}px, 0) scale(${sc}) rotate(${rotDeg}deg)`,
-        transformOrigin: "0 0",
-      };
-    }, [view.panX, view.panY, view.scale, rotDeg, stableFitScale, canRenderStable]);
-
-    const layerSizeStyle = useMemo(() => {
-      return naturalW > 0 && naturalH > 0 ? { width: `${naturalW}px`, height: `${naturalH}px` } : null;
-    }, [naturalW, naturalH]);
-
-    const viewBox = useMemo(() => {
-      return geom?.w && geom?.h ? `0 0 ${geom.w} ${geom.h}` : inferViewBox(regions || []);
-    }, [geom?.w, geom?.h, regions]);
-
-    const rev = Number((isImport ? importAssetsRevByPage : assetsRevByPage)?.[pageId] || 0);
-    const stableImageSrc = imageUrl ? `${imageUrl}${String(imageUrl).includes("?") ? "&" : "?"}v=${rev}` : "";
-    const stableMaskSrc = maskUrl ? `${maskUrl}${String(maskUrl).includes("?") ? "&" : "?"}v=${rev}` : "";
-
-    const startDrag = (e) => {
-      if (!pageId) return;
-      if (!e.isPrimary) return;
-      if (e.button !== 0) return;
-      // Allow clicking interactive overlay elements (regions) without starting a pan drag.
-      const t = e.target;
-      if (t && typeof t.closest === "function") {
-        if (t.closest(".region-polygon")) return;
-        if (t.closest("button,a,input,textarea,select")) return;
-      }
-      try {
-        e.currentTarget?.setPointerCapture?.(e.pointerId);
-      } catch (_) {}
-      viewerDragRef.current = {
-        active: true,
-        pageId,
-        isImport: Boolean(isImport),
-        pointerId: e.pointerId,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-        startPanX: view.panX,
-        startPanY: view.panY,
-        moved: false,
-        justDraggedAt: Number(viewerDragRef.current?.justDraggedAt || 0),
-        thresholdPx: viewerDragRef.current?.thresholdPx || 4,
-      };
-    };
-
-    const moveDrag = (e) => {
-      const st = viewerDragRef.current;
-      if (
-        !st?.active ||
-        st.pageId !== pageId ||
-        Boolean(st.isImport) !== Boolean(isImport) ||
-        st.pointerId !== e.pointerId
-      )
-        return;
-      const dx = e.clientX - st.startClientX;
-      const dy = e.clientY - st.startClientY;
-      const dist = Math.hypot(dx, dy);
-      if (dist > Number(st.thresholdPx || 4)) st.moved = true;
-      patchViewState(isImport, pageId, (cur) => ({ ...cur, panX: st.startPanX + dx, panY: st.startPanY + dy }));
-      e.preventDefault();
-    };
-
-    const endDrag = (e) => {
-      const st = viewerDragRef.current;
-      if (
-        !st?.active ||
-        st.pageId !== pageId ||
-        Boolean(st.isImport) !== Boolean(isImport) ||
-        (e && st.pointerId != null && e.pointerId != null && st.pointerId !== e.pointerId)
-      )
-        return;
-      const wasMoved = Boolean(st.moved);
-      viewerDragRef.current = {
-        ...st,
-        active: false,
-        pointerId: null,
-        moved: false,
-        justDraggedAt: wasMoved ? Date.now() : Number(st.justDraggedAt || 0),
-      };
-      try {
-        surfaceRef.current?.releasePointerCapture?.(st.pointerId);
-      } catch (_) {}
-      e?.preventDefault?.();
-    };
-
-    useEffect(() => {
-      const onBlur = () => {
-        const st = viewerDragRef.current;
-        if (!st?.active) return;
-        if (st.pageId !== pageId || Boolean(st.isImport) !== Boolean(isImport)) return;
-        try {
-          surfaceRef.current?.releasePointerCapture?.(st.pointerId);
-        } catch (_) {}
-        viewerDragRef.current = { ...st, active: false, pointerId: null, moved: false };
-      };
-      const onUp = (e) => {
-        const st = viewerDragRef.current;
-        if (!st?.active) return;
-        if (st.pageId !== pageId || Boolean(st.isImport) !== Boolean(isImport)) return;
-        if (st.pointerId != null && e?.pointerId != null && st.pointerId !== e.pointerId) return;
-        viewerDragRef.current = { ...st, active: false, pointerId: null, moved: false };
-        try {
-          surfaceRef.current?.releasePointerCapture?.(st.pointerId);
-        } catch (_) {}
-      };
-      window.addEventListener("blur", onBlur);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
-      return () => {
-        window.removeEventListener("blur", onBlur);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
-      };
-    }, [pageId, isImport]);
-
-    const bumpScale = (factor, clientPoint = null) => {
-      if (!pageId) return;
-      const el = surfaceRef.current;
-      const rect = el?.getBoundingClientRect?.() || null;
-      const cx = rect
-        ? (clientPoint && Number.isFinite(clientPoint.x) ? clientPoint.x - rect.left : rect.width / 2)
-        : 0;
-      const cy = rect
-        ? (clientPoint && Number.isFinite(clientPoint.y) ? clientPoint.y - rect.top : rect.height / 2)
-        : 0;
-
-      patchViewState(isImport, pageId, (cur) => {
-        const prevScale = clampScale(cur.scale);
-        const nextScale = clampScale(prevScale * factor);
-        try {
-          console.log("[viewer]", {
-            action: "zoom",
-            pageId,
-            isImport: !!isImport,
-            factor,
-            cursor: { x: cx, y: cy },
-            prev: { scale: prevScale, panX: cur.panX, panY: cur.panY, rotSteps: cur.rotSteps },
-            next: { scale: nextScale },
-          });
-        } catch (_) {}
-        if (nextScale === prevScale) return cur;
-        const k = nextScale / prevScale;
-        const nextPanX = cx - (cx - cur.panX) * k;
-        const nextPanY = cy - (cy - cur.panY) * k;
-        return { ...cur, scale: nextScale, panX: nextPanX, panY: nextPanY };
-      });
-    };
-
-    const onWheel = (e) => {
-      if (!pageId) return;
-      const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
-      try {
-        console.log("[viewer]", { action: "wheelZoom", pageId, isImport: !!isImport, deltaY: e.deltaY, factor });
-      } catch (_) {}
-      bumpScale(factor, { x: e.clientX, y: e.clientY });
-      e.preventDefault(); // prevent page scroll while zooming inside viewer
-    };
-
-    const resetView = () => {
-      try {
-        console.log("[viewer]", { action: "reset", pageId, isImport: !!isImport });
-      } catch (_) {}
-      return patchViewState(isImport, pageId, { rotSteps: 0, scale: 1, panX: 0, panY: 0 });
-    };
-
-    const rotateKeepingCenter = (dir) => {
-      if (!pageId) return;
-      try {
-        console.log("[viewer]", { action: "rotate", pageId, isImport: !!isImport, dir });
-      } catch (_) {}
-      const el = surfaceRef.current;
-      const rect = el?.getBoundingClientRect?.() || null;
-      const cx = rect ? rect.width / 2 : 0;
-      const cy = rect ? rect.height / 2 : 0;
-      const scaleTotal = clampScale(view.scale) * (Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1);
-      if (!(scaleTotal > 0)) {
-        patchViewState(isImport, pageId, (cur) => ({ ...cur, rotSteps: (cur.rotSteps + dir + 4) % 4 }));
-        return;
-      }
-
-      patchViewState(isImport, pageId, (cur) => {
-        const rot0 = ((Number(cur.rotSteps) % 4) + 4) % 4;
-        const rot1 = (rot0 + dir + 4) % 4;
-        const panX0 = Number.isFinite(cur.panX) ? cur.panX : 0;
-        const panY0 = Number.isFinite(cur.panY) ? cur.panY : 0;
-
-        const dx = (cx - panX0) / scaleTotal;
-        const dy = (cy - panY0) / scaleTotal;
-
-        // Convert screen-center back to content coords by applying inverse rotation (multiples of 90°).
-        let px = dx;
-        let py = dy;
-        if (rot0 === 1) {
-          px = dy;
-          py = -dx;
-        } else if (rot0 === 2) {
-          px = -dx;
-          py = -dy;
-        } else if (rot0 === 3) {
-          px = -dy;
-          py = dx;
-        }
-
-        // Apply new rotation to that same content point, then choose pan so it stays at screen center.
-        let rx = px;
-        let ry = py;
-        if (rot1 === 1) {
-          rx = -py;
-          ry = px;
-        } else if (rot1 === 2) {
-          rx = -px;
-          ry = -py;
-        } else if (rot1 === 3) {
-          rx = py;
-          ry = -px;
-        }
-
-        const nextPanX = cx - rx * scaleTotal;
-        const nextPanY = cy - ry * scaleTotal;
-
-        return { ...cur, rotSteps: rot1, panX: nextPanX, panY: nextPanY };
-      });
-    };
-
-    const rotateLeft = () => rotateKeepingCenter(-1);
-    const rotateRight = () => rotateKeepingCenter(1);
-
-    const isDragging = Boolean(viewerDragRef.current?.active && viewerDragRef.current?.pageId === pageId);
-
-    return html`
-      <div>
-        <div className="viewer-toolbar">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-sollers-gray">${title || "Viewer"}</span>
-            <span className="mono text-xs text-sollers-gray">${Math.round(clampScale(Number(view.scale || 1)) * 100)}% | ${rotDeg}°</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${() => bumpScale(1 / 1.15)}>
-              −
-            </button>
-            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${() => bumpScale(1.15)}>
-              +
-            </button>
-            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${rotateLeft}>
-              ⟲ 90°
-            </button>
-            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${rotateRight}>
-              ⟳ 90°
-            </button>
-            <button className="px-3 py-1.5 rounded-lg border border-sollers-grayBorder" onClick=${resetView}>
-              Сброс
-            </button>
-          </div>
-        </div>
-
-        <div
-          className=${`viewer-surface ${isDragging ? "is-dragging" : ""}`}
-          ref=${surfaceRef}
-          onPointerDown=${startDrag}
-          onPointerMove=${moveDrag}
-          onPointerUp=${endDrag}
-          onPointerCancel=${endDrag}
-          onWheel=${onWheel}
-        >
-          ${!hasEverRenderedRef.current && !canRenderStable
-            ? html`<div className="viewer-placeholder">Загрузка…</div>`
-            : null}
-          <div
-            className="viewer-transformLayer"
-            style=${{
-              ...(layerSizeStyle || {}),
-              // Keep the layer in DOM to avoid white flashes during first layout.
-              ...(!hasEverRenderedRef.current && !canRenderStable ? { opacity: 0 } : null),
-              ...transformStyle,
-            }}
-          >
-            <img
-              src=${stableImageSrc}
-              alt=${imageAlt || "Rendered page"}
-              className="viewer-page"
-              style=${layerSizeStyle}
-              ref=${imageRef}
-              onLoad=${(e) => {
-                try {
-                  onImageLoad?.(e);
-                } finally {
-                  try {
-                    const img = e.currentTarget;
-                    const geom = readImageGeom(img);
-                    if (pageId && geom) setGeomById((prev) => upsertGeom(prev, pageId, geom));
-                  } catch (_) {}
-                }
-              }}
-              draggable="false"
-            />
-
-            ${maskUrl && maskOk !== false
-              ? html`
-                  <img
-                    src=${stableMaskSrc}
-                    alt="Mask (preload)"
-                    className="viewer-maskPreload"
-                    style=${layerSizeStyle}
-                    onLoad=${onMaskLoad}
-                    onError=${onMaskError}
-                    draggable="false"
-                  />
-                `
-              : null}
-
-            <svg
-              className="viewer-overlay"
-              style=${layerSizeStyle}
-              viewBox=${viewBox}
-              preserveAspectRatio="none"
-            >
-              ${(regions || []).map((region) => {
-                const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
-                const style = getPolygonStyle(conf);
-                const isSelected = String(selectedRegion?.region_id || "") === String(region?.region_id || "");
-                return html`
-                  <polygon
-                    key=${region.region_id}
-                    points=${pointsToAttr(region.polygon)}
-                    className=${`region-polygon ${isSelected ? "is-selected" : ""}`}
-                    fill=${style.fill}
-                    stroke=${style.stroke}
-                    onClick=${() => {
-                      const st = viewerDragRef.current;
-                      if (st?.active) return;
-                      const justDraggedAt = Number(st?.justDraggedAt || 0);
-                      if (justDraggedAt > 0 && Date.now() - justDraggedAt < 240) return;
-                      onRegionClick?.(region);
-                    }}
-                  />
-                `;
-              })}
-            </svg>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
   const isBusy = generateInFlight || statusState === "running";
 
   return html`
@@ -1810,10 +1802,12 @@ function App() {
 
                   ${currentAssets
                     ? html`
-                        <${PageViewer}
+                        <${StablePageViewer}
                           isImport=${false}
                           pageId=${currentPageId}
                           title=${"Просмотр"}
+                          view=${getViewState(viewByPage, currentPageId)}
+                          onPatchViewState=${(patch) => patchViewState(false, currentPageId, patch)}
                           imageUrl=${relUrl(currentAssets.image_url)}
                           imageAlt=${"Rendered page"}
                           imageRef=${workspaceImageRef}
@@ -1828,10 +1822,6 @@ function App() {
                           }}
                           maskUrl=${relUrl(`${currentAssets.mask_url}?t=${maskNonce}`)}
                           maskOk=${maskOkByPage[currentPageId]}
-                          maskStyle=${(() => {
-                            const g = pageGeomById[currentPageId] || {};
-                            return g.cw && g.ch ? { width: `${g.cw}px`, height: `${g.ch}px` } : null;
-                          })()}
                           onMaskLoad=${() => {
                             setMaskOkByPage((prev) => {
                               if (prev?.[currentPageId] === true) return prev;
@@ -1844,6 +1834,9 @@ function App() {
                           regions=${currentAssets.regions || []}
                           geomById=${pageGeomById}
                           setGeomById=${setPageGeomById}
+                          selectedRegionId=${selectedRegion?.region_id || ""}
+                          viewerDragRef=${viewerDragRef}
+                          rev=${Number(assetsRevByPage?.[currentPageId] || 0)}
                           onRegionClick=${(region) => {
                             setSelectedRegion(region);
                             setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
@@ -1885,10 +1878,12 @@ function App() {
                                 const assets = importAssetsByPage[pageId] || buildOfflineAssets(importReport, pageId);
                                 const imageUrl = apiUrl(`/projects/${importProjectId}/pages/${pageId}/image`);
                                 return html`
-                                  <${PageViewer}
+                                  <${StablePageViewer}
                                     isImport=${true}
                                     pageId=${pageId}
                                     title=${"Просмотр (офлайн)"}
+                                    view=${getViewState(importViewByPage, pageId)}
+                                    onPatchViewState=${(patch) => patchViewState(true, pageId, patch)}
                                     imageUrl=${relUrl(imageUrl)}
                                     imageAlt=${"Rendered page"}
                                     imageRef=${importImageRef}
@@ -1906,6 +1901,9 @@ function App() {
                                     regions=${assets.regions || []}
                                     geomById=${importPageGeomById}
                                     setGeomById=${setImportPageGeomById}
+                                    selectedRegionId=${selectedRegion?.region_id || ""}
+                                    viewerDragRef=${viewerDragRef}
+                                    rev=${Number(importAssetsRevByPage?.[pageId] || 0)}
                                     onRegionClick=${(region) => {
                                       setSelectedRegion(region);
                                       setRegionTranslation({ statusLabel: "loading", text: "", error: "" });
