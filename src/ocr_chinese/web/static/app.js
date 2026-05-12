@@ -244,6 +244,7 @@ function StablePageViewer({
   rev,
   everRenderedRef,
   everRenderedKey,
+  translatingRegionIds = [],
 }) {
   const geom = (pageId && geomById?.[pageId]) || {};
   const safeView = view || getViewState(null, null);
@@ -631,13 +632,24 @@ function StablePageViewer({
               const conf = Number(region.ocr_confidence ?? region.confidence ?? 0);
               const style = getPolygonStyle(conf);
               const isSelected = String(selectedRegionId || "") === String(region?.region_id || "");
+              const rid = String(region?.region_id ?? "");
+              const isTranslating =
+                Array.isArray(translatingRegionIds) &&
+                translatingRegionIds.some((x) => String(x) === rid);
+              const strokeUse = isSelected
+                ? style.stroke
+                : isTranslating
+                  ? "rgba(139, 92, 246, 0.38)"
+                  : style.stroke;
+              const strokeW = isSelected ? "2.5" : isTranslating ? "1.6" : "1";
               return html`
                 <polygon
                   key=${region.region_id}
                   points=${pointsToAttr(region.polygon)}
-                  className=${`region-polygon ${isSelected ? "is-selected" : ""}`}
+                  className=${`region-polygon ${isSelected ? "is-selected" : ""} ${isTranslating && !isSelected ? "is-translating" : ""}`}
                   fill=${style.fill}
-                  stroke=${style.stroke}
+                  stroke=${strokeUse}
+                  strokeWidth=${strokeW}
                   onClick=${() => {
                     const st = viewerDragRef.current;
                     if (st?.active) return;
@@ -755,6 +767,7 @@ function App() {
   const [statusPayload, setStatusPayload] = useState(null);
   const [runtimeInfo, setRuntimeInfo] = useState(null);
   const [translationByPage, setTranslationByPage] = useState({});
+  const translationByPageRef = useRef({});
   const [pageTranslationsById, setPageTranslationsById] = useState({}); // pageId -> {items: {region_id -> entry}}
   const [assetsByPage, setAssetsByPage] = useState({});
   const [assetsRevByPage, setAssetsRevByPage] = useState({}); // pageId -> number; bumps only when image/mask url changes
@@ -917,6 +930,20 @@ function App() {
   const currentPageId = derivedPageIds[pageIndex] || derivedPageIds[0] || null;
   const currentAssets = currentPageId ? assetsByPage[currentPageId] : null;
   const importCurrentPageId = importPages[importPageIndex] || null;
+
+  useEffect(() => {
+    translationByPageRef.current = translationByPage;
+  }, [translationByPage]);
+
+  const translatingRegionIds = useMemo(() => {
+    const payload = pageTranslationsById[currentPageId];
+    const items = payload?.items || {};
+    const ids = [];
+    for (const [rid, entry] of Object.entries(items)) {
+      if (String(entry?.status_draft || "").toLowerCase() === "running") ids.push(rid);
+    }
+    return ids;
+  }, [pageTranslationsById, currentPageId]);
 
   function syncWorkspaceGeom(img = workspaceImageRef.current) {
     if (!currentPageId || !img) return;
@@ -1097,12 +1124,18 @@ function App() {
   }, [projectId, pages.length]);
 
   useEffect(() => {
-    if (!projectId || pages.length === 0) return undefined;
-    const timer = window.setInterval(async () => {
+    // Poll using derivedPageIds so translation progress loads even before /pages list hydrates
+    // (progress_pages can already list page ids while pages[] is still empty).
+    if (!projectId || derivedPageIds.length === 0) return undefined;
+    const pollOnce = async () => {
       const entries = [];
-      for (const pageId of pages) {
-        const hasFinished = translationByPage[pageId]?.regions_total > 0 &&
-          translationByPage[pageId]?.regions_total === translationByPage[pageId]?.draft_done + translationByPage[pageId]?.draft_error;
+      const prevMap = translationByPageRef.current || {};
+      for (const pageId of derivedPageIds) {
+        const tp = prevMap[pageId] || {};
+        const rt = Number(tp.regions_total || 0);
+        const dd = Number(tp.draft_done || 0);
+        const de = Number(tp.draft_error || 0);
+        const hasFinished = rt > 0 && rt === dd + de;
         if (hasFinished) continue;
         try {
           const resp = await fetch(apiUrl(`/projects/${projectId}/pages/${pageId}/translations/status?lang=ru`));
@@ -1121,9 +1154,11 @@ function App() {
           return next;
         });
       }
-    }, POLL_TRANSLATE_MS);
+    };
+    pollOnce();
+    const timer = window.setInterval(pollOnce, POLL_TRANSLATE_MS);
     return () => window.clearInterval(timer);
-  }, [projectId, pages, translationByPage]);
+  }, [projectId, derivedPageIds]);
 
   useEffect(() => {
     // Do NOT poll translations for every page (can freeze UI on big PDFs).
@@ -1493,6 +1528,10 @@ function App() {
   }
 
   const rows = useMemo(() => {
+    const translatePipelineActive =
+      String(statusPayload?.stage || "").toLowerCase().includes("translate") ||
+      String(statusPayload?.translation?.state || "").toLowerCase() === "running";
+
     return derivedPageIds.map((pageId) => {
       const o = progressPages[pageId] || {};
       const t = translationByPage[pageId] || {};
@@ -1505,10 +1544,21 @@ function App() {
       const regionsTotalRaw = Number(t.regions_total || 0);
       const regionsTotal = regionsTotalRaw > 0 ? regionsTotalRaw : (ocrTot > 0 ? ocrTot : Number(avgRegionsPerPage || 0));
       const translateHasRealData = regionsTotalRaw > 0 || draftDone > 0 || draftError > 0 || draftRunning > 0;
+      const denomEff =
+        regionsTotalRaw > 0
+          ? regionsTotalRaw
+          : ocrTotRaw > 0
+            ? ocrTotRaw
+            : Number(regionsTotal || 0);
+      const translateShow =
+        translateHasRealData ||
+        ocrTotRaw > 0 ||
+        translatePipelineActive ||
+        String(statusPayload?.translation?.state || "").toLowerCase() === "running";
 
       const ocrEtaRaw = etaModel.estimateWithFallback("ocr", pageId, ocrCur, ocrTot, null);
-      const draftEta = translateHasRealData
-        ? etaModel.estimateWithFallback("draft", pageId, draftDone, regionsTotal, null)
+      const draftEta = denomEff > 0 || translateHasRealData
+        ? etaModel.estimateWithFallback("draft", pageId, draftDone, denomEff > 0 ? denomEff : regionsTotal, null)
         : null;
       const translateEta = draftEta ?? null;
       const ocrEta = smoothEta(`${pageId}:ocr`, ocrEtaRaw, "stage");
@@ -1543,20 +1593,23 @@ function App() {
         etaJumpRef.current[pageId] = { lastAt: now, lastEta: pageEta };
       }
 
+      const denomLabel =
+        denomEff > 0 ? denomEff : regionsTotalRaw || (regionsTotal > 0 ? `~${Math.round(regionsTotal)}` : "?");
+
       return {
         pageId,
         ocrPct: toPct(ocrCur, ocrTot || 0),
-        translatePct: translateHasRealData ? toPct(draftDone + draftError, regionsTotal || 0) : 0,
+        translatePct:
+          translateShow && denomEff > 0 ? toPct(draftDone + draftError, denomEff) : 0,
         ocrLabel: `${ocrCur}/${ocrTotRaw || (ocrTot > 0 ? `~${Math.round(ocrTot)}` : "?")}`,
-        translateLabel: translateHasRealData
-          ? `${draftDone}/${regionsTotalRaw || (regionsTotal > 0 ? `~${Math.round(regionsTotal)}` : "?")}`
-          : "",
+        translateLabel: translateShow ? `${draftDone}/${denomLabel}` : "",
+        translateShow,
         ocrEta,
         translateEta: translateEtaSmooth,
         pageEta,
       };
     });
-  }, [derivedPageIds, progressPages, translationByPage, avgRegionsPerPage]);
+  }, [derivedPageIds, progressPages, translationByPage, avgRegionsPerPage, statusPayload?.stage, statusPayload?.translation?.state]);
 
   const isBusy = generateInFlight || statusState === "running";
 
@@ -1763,7 +1816,7 @@ function App() {
                                       <div className="h-2 bg-sollers-orange rounded" style=${{ width: `${row.ocrPct}%` }}></div>
                                     </div>
                                   </div>
-                                  ${row.translateLabel
+                                  ${row.translateShow
                                     ? html`
                                         <div>
                                           <div className="flex justify-between text-xs text-sollers-gray">
@@ -1841,6 +1894,7 @@ function App() {
                           geomById=${pageGeomById}
                           setGeomById=${setPageGeomById}
                           selectedRegionId=${selectedRegion?.region_id || ""}
+                          translatingRegionIds=${translatingRegionIds}
                           viewerDragRef=${viewerDragRef}
                           rev=${Number(assetsRevByPage?.[currentPageId] || 0)}
                           everRenderedRef=${viewerEverRenderedRef}
