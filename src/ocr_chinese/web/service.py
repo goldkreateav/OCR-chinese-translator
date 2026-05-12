@@ -115,7 +115,11 @@ class ProjectService:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self._translate_workers_limit = self._resolve_translate_workers(translate_workers)
         self._translate_cfg: OpenAICompatConfig | None = None
-        self._translate_queue: "queue.Queue[dict]" = queue.Queue()
+        tw = int(self._translate_workers_limit)
+        # Cap queued jobs waiting for workers: blocks enqueue (e.g. OCR callback) when backlog is huge —
+        # limits memory and applies backpressure while concurrent API calls stay == worker count.
+        pending_cap = max(tw * 8, tw + 16)
+        self._translate_queue: "queue.Queue[dict]" = queue.Queue(maxsize=int(pending_cap))
         self._translate_threads: list[threading.Thread] = []
         self._translate_started = False
         self._translate_metrics_lock = threading.Lock()
@@ -1429,6 +1433,7 @@ class ProjectService:
             payload = {
                 "project_id": str(project_id),
                 "root_dir": str(self.root_dir),
+                "translate_workers": int(self._translate_workers_limit),
                 "options": {
                     "dpi": int(getattr(options, "dpi", 360) or 360),
                     "render_backend": str(getattr(options, "render_backend", "auto") or "auto"),
