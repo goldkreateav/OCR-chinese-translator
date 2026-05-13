@@ -773,14 +773,7 @@ function App() {
   const translationByPageRef = useRef({});
   /** Last known OCR region counts per page (progress_pages may drop after OCR completes). */
   const ocrRegionsMemoryRef = useRef({});
-  /** Last known regions_total from /translations/status per page (poll may skip “done” pages). */
-  const translationTotalsMemoryRef = useRef({});
   const [pageTranslationsById, setPageTranslationsById] = useState({}); // pageId -> {items: {region_id -> entry}}
-
-  useEffect(() => {
-    ocrRegionsMemoryRef.current = {};
-    translationTotalsMemoryRef.current = {};
-  }, [projectId]);
   const [assetsByPage, setAssetsByPage] = useState({});
   const [assetsRevByPage, setAssetsRevByPage] = useState({}); // pageId -> number; bumps only when image/mask url changes
   const [maskOkByPage, setMaskOkByPage] = useState({});
@@ -922,19 +915,6 @@ function App() {
     return acc;
   }, [progressPages]);
 
-  const rememberedTranslationTotalsByPage = useMemo(() => {
-    const acc = { ...(translationTotalsMemoryRef.current || {}) };
-    for (const [pid, t] of Object.entries(translationByPage || {})) {
-      const rt = Number(t?.regions_total || 0);
-      if (Number.isFinite(rt) && rt > 0) {
-        const key = String(pid);
-        acc[key] = Math.max(Number(acc[key] || 0), rt);
-      }
-    }
-    translationTotalsMemoryRef.current = acc;
-    return acc;
-  }, [translationByPage]);
-
   const derivedPageIds = useMemo(() => {
     const fromPages = Array.isArray(pages) ? pages.filter(Boolean) : [];
     if (fromPages.length > 0) return fromPages;
@@ -1059,13 +1039,7 @@ function App() {
       : "cpu";
 
   const webEnableRetryOcr = Boolean(runtimeInfo?.web_enable_retry_ocr);
-  // Do not tie visibility only to progress_pages: backend often clears it after OCR while translation runs.
-  const showProgress =
-    Object.keys(progressPages || {}).length > 0 ||
-    (Boolean(projectId) &&
-      (derivedPageIds.length > 0 ||
-        Number(statusPayload?.pages || 0) > 0 ||
-        String(statusPayload?.status || "") === "running"));
+  const showProgress = Object.keys(progressPages || {}).length > 0;
 
   const stepMaskDone = stage !== "ожидание" && stage !== "рендер" ? true : stage === "маска" ? false : false;
   const stepMaskActive = stage === "маска";
@@ -1587,7 +1561,6 @@ function App() {
       const ocrCur = Number(o.current_region || 0);
       const ocrTotRaw = Number(o.total_regions || 0);
       const rememberedOcr = Number(rememberedOcrRegionsByPage[pageId] || 0);
-      const rememberedTr = Number(rememberedTranslationTotalsByPage[pageId] || 0);
       const ocrTot = ocrTotRaw > 0 ? ocrTotRaw : Number(avgRegionsPerPage || 0);
       const draftDone = Number(t.draft_done || 0);
       const draftError = Number(t.draft_error || 0);
@@ -1598,18 +1571,15 @@ function App() {
       const denomEff =
         regionsTotalRaw > 0
           ? regionsTotalRaw
-          : rememberedTr > 0
-            ? rememberedTr
-            : ocrTotRaw > 0
-              ? ocrTotRaw
-              : rememberedOcr > 0
-                ? rememberedOcr
-                : Number(regionsTotal || 0);
+          : ocrTotRaw > 0
+            ? ocrTotRaw
+            : rememberedOcr > 0
+              ? rememberedOcr
+              : Number(regionsTotal || 0);
       const translateShow =
         translateHasRealData ||
         ocrTotRaw > 0 ||
         rememberedOcr > 0 ||
-        rememberedTr > 0 ||
         regionsTotalRaw > 0 ||
         translatePipelineActive ||
         String(statusPayload?.translation?.state || "").toLowerCase() === "running";
@@ -1671,7 +1641,6 @@ function App() {
     derivedPageIds,
     progressPages,
     rememberedOcrRegionsByPage,
-    rememberedTranslationTotalsByPage,
     translationByPage,
     avgRegionsPerPage,
     statusPayload?.stage,

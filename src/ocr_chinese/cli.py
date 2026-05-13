@@ -183,11 +183,6 @@ def main() -> None:
         return
 
     if args.command == "web":
-        import os
-
-        # Child processes (e.g. generate_worker) inherit env; keep TRANSLATE_WORKERS aligned with CLI.
-        if args.translate_workers is not None:
-            os.environ["TRANSLATE_WORKERS"] = str(int(args.translate_workers))
         try:
             import uvicorn
         except ImportError as exc:  # pragma: no cover

@@ -25,14 +25,7 @@ def main() -> int:
     if not project_id or not root_dir:
         raise RuntimeError("Invalid payload: project_id/root_dir is required.")
 
-    tw_raw = payload.get("translate_workers")
-    tw_opt = None
-    if tw_raw is not None:
-        try:
-            tw_opt = int(tw_raw)
-        except (TypeError, ValueError):
-            tw_opt = None
-    service = ProjectService(Path(root_dir), translate_workers=tw_opt)
+    service = ProjectService(Path(root_dir))
     options = GenerateOptions(**opts_raw)
 
     # Cooperative cancellation between processes:
