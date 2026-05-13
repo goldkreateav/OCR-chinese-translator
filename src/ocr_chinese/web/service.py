@@ -161,6 +161,24 @@ def _query_gpus_free_vram_mb() -> list[dict[str, Any]]:
     return rows
 
 
+def _gpu_free_mb_for_physical_index(candidates: list[dict[str, Any]], physical_idx: int | None) -> int | None:
+    """
+    Return free_mb for a physical GPU index from the same candidate list we expose as gpu_candidates,
+    so status numbers stay consistent with that snapshot.
+    """
+    if physical_idx is None:
+        return None
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        try:
+            if int(c.get("index")) == int(physical_idx):
+                return int(c.get("free_mb", 0))
+        except Exception:
+            continue
+    return None
+
+
 def _apply_cpu_only_cuda_env_to_mapping(env: dict[str, str]) -> None:
     """Hide GPUs from a subprocess so Paddle/CUDA cannot attach to a device."""
     env["CUDA_VISIBLE_DEVICES"] = ""
@@ -1135,6 +1153,10 @@ class ProjectService:
             """
             Apply Paddle CUDA allocator flags based on current free VRAM.
             Cap policy: 40% of free VRAM on the selected GPU (most free GPU first).
+
+            Note: FLAGS_gpu_memory_limit_mb / fraction tune the allocator pool; they do not
+            guarantee that every peak allocation stays below the cap (PaddleX / fragmentation).
+            Use detector side limits (OCR_PADDLE_MAX_SIDE_LIMITS) if OOM persists.
             """
             info = {
                 "gpu_mem_cap_enabled": False,
@@ -1200,14 +1222,16 @@ class ProjectService:
             return info
 
         # IMPORTANT:
+        # - One nvidia-smi snapshot (vram_snapshot) drives lock, FLAGS cap, gpu_candidates, and status.
         # - Apply allocator flags before importing/probing Paddle.
-        # - Additionally lock CUDA_VISIBLE_DEVICES to the selected "most free" GPU,
-        #   so Paddle can't accidentally select the other GPU in multi-GPU setups.
+        # - Always set CUDA_VISIBLE_DEVICES for requested cuda when we can pick an index
+        #   (ocr_auto_select_gpu only controls multi-GPU *attempt ordering*, not whether we pin visibility).
+        vram_snapshot: list[dict[str, Any]] = []
         cuda_visible_devices_locked_to: int | None = None
         pre_best_gpu_meta: dict | None = None
         forced_phys = getattr(options, "ocr_force_physical_gpu_index", None)
         if requested_device == "cuda":
-            pre_candidates = _query_gpus_free_vram_mb()
+            vram_snapshot = _query_gpus_free_vram_mb()
             if isinstance(forced_phys, int):
                 try:
                     fi = int(forced_phys)
@@ -1215,7 +1239,7 @@ class ProjectService:
                     fi = -1
                 if fi >= 0:
                     pre_best_gpu_meta = next(
-                        (r for r in pre_candidates if int(r.get("index", -(10**9))) == fi),
+                        (r for r in vram_snapshot if int(r.get("index", -(10**9))) == fi),
                         {"index": fi, "free_mb": 0},
                     )
                     try:
@@ -1224,8 +1248,8 @@ class ProjectService:
                     except Exception:
                         cuda_visible_devices_locked_to = None
             else:
-                pre_best_gpu_meta = pre_candidates[0] if pre_candidates else None
-                if bool(getattr(options, "ocr_auto_select_gpu", True)) and isinstance(pre_best_gpu_meta, dict):
+                pre_best_gpu_meta = vram_snapshot[0] if vram_snapshot else None
+                if isinstance(pre_best_gpu_meta, dict):
                     try:
                         cuda_visible_devices_locked_to = int(pre_best_gpu_meta.get("index"))
                         # After this, the locked GPU becomes GPU 0 inside the process.
@@ -1236,40 +1260,45 @@ class ProjectService:
 
         paddle_probe = self._probe_paddle_device_runtime()
         cuda_ok = bool(paddle_probe.get("paddle_cuda_available"))
-        # Build ordered attempt list.
+        # Same VRAM snapshot as lock/cap (no second nvidia-smi call here).
         gpu_candidates: list[dict] = []
         min_free = int(getattr(options, "ocr_min_free_vram_mb", 1024) or 1024)
-        fallback_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False))
-        if requested_device == "cuda" and cuda_ok and (
-            bool(getattr(options, "ocr_auto_select_gpu", True))
-            or isinstance(getattr(options, "ocr_force_physical_gpu_index", None), int)
-        ):
-            gpu_candidates = _query_gpus_free_vram_mb()
+        if requested_device == "cuda":
+            gpu_candidates = list(vram_snapshot)
         gpu_attempts: list[tuple[str, int | None, dict | None]] = []
-        for cand in gpu_candidates:
-            idx = int(cand.get("index"))
-            free_mb = int(cand.get("free_mb", 0))
-            if free_mb < min_free:
-                continue
-            gpu_attempts.append((f"gpu:{idx}", idx, cand))
-        # If nothing meets the threshold but we do have GPUs, try the best one.
-        if not gpu_attempts and gpu_candidates:
-            best = gpu_candidates[0]
-            idx = int(best.get("index"))
-            gpu_attempts.append((f"gpu:{idx}", idx, best))
-
+        auto_sel = bool(getattr(options, "ocr_auto_select_gpu", True))
         forced_phys2 = getattr(options, "ocr_force_physical_gpu_index", None)
-        if isinstance(forced_phys2, int) and requested_device == "cuda":
-            try:
-                fi2 = int(forced_phys2)
-            except Exception:
-                fi2 = -1
-            if fi2 >= 0:
-                meta2 = next(
-                    (r for r in gpu_candidates if int(r.get("index", -(10**9))) == fi2),
-                    {"index": fi2, "free_mb": 0},
-                )
-                gpu_attempts = [("gpu:0", fi2, meta2)]
+        if requested_device == "cuda" and cuda_ok:
+            if isinstance(forced_phys2, int):
+                try:
+                    fi2 = int(forced_phys2)
+                except Exception:
+                    fi2 = -1
+                if fi2 >= 0:
+                    meta2 = next(
+                        (r for r in gpu_candidates if int(r.get("index", -(10**9))) == fi2),
+                        {"index": fi2, "free_mb": 0},
+                    )
+                    gpu_attempts = [("gpu:0", fi2, meta2)]
+            elif auto_sel:
+                for cand in gpu_candidates:
+                    idx = int(cand.get("index"))
+                    free_mb = int(cand.get("free_mb", 0))
+                    if free_mb < min_free:
+                        continue
+                    gpu_attempts.append((f"gpu:{idx}", idx, cand))
+                if not gpu_attempts and gpu_candidates:
+                    best = gpu_candidates[0]
+                    idx = int(best.get("index"))
+                    gpu_attempts.append((f"gpu:{idx}", idx, best))
+            else:
+                # auto_select off: still run on the pinned best-free GPU (single attempt).
+                if isinstance(pre_best_gpu_meta, dict) and cuda_visible_devices_locked_to is not None:
+                    gpu_attempts = [("gpu:0", cuda_visible_devices_locked_to, pre_best_gpu_meta)]
+                elif gpu_candidates:
+                    best = gpu_candidates[0]
+                    idx = int(best.get("index"))
+                    gpu_attempts.append((f"gpu:{idx}", idx, best))
 
         # If we locked CUDA_VISIBLE_DEVICES, restrict GPU attempts to just GPU 0
         # (visible inside the process). This makes behavior deterministic.
@@ -1293,9 +1322,22 @@ class ProjectService:
 
         last_exc: Exception | None = None
         for attempt_i, (eff, paddle_dev, gpu_idx, gpu_meta) in enumerate(attempts):
+            if eff == "cpu":
+                # Prior CUDA attempts in this worker may have set GPU-only Paddle flags.
+                # Leaving them while running on CPU can confuse allocators after CUDA_VISIBLE_DEVICES="".
+                if not user_set_gpu_mem_limit:
+                    os.environ.pop("FLAGS_gpu_memory_limit_mb", None)
+                if not user_set_gpu_mem_fraction:
+                    os.environ.pop("FLAGS_fraction_of_gpu_memory_to_use", None)
             mem_cap_info = (
                 _apply_paddle_cuda_memory_cap(gpu_meta) if eff == "cuda" else _apply_paddle_cuda_memory_cap(None)
             )
+            sel_free_mb = _gpu_free_mb_for_physical_index(gpu_candidates, gpu_idx if eff == "cuda" else None)
+            if sel_free_mb is None and isinstance(gpu_meta, dict):
+                try:
+                    sel_free_mb = int(gpu_meta.get("free_mb"))
+                except Exception:
+                    sel_free_mb = None
             status["paddle_runtime"] = {
                 "requested_device": requested_device,
                 "effective_device": eff,
@@ -1305,7 +1347,7 @@ class ProjectService:
                 "selected_gpu_index": gpu_idx,
                 "physical_gpu_index": gpu_idx if eff == "cuda" else None,
                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-                "gpu_selected_free_mb": int(gpu_meta.get("free_mb")) if isinstance(gpu_meta, dict) else None,
+                "gpu_selected_free_mb": sel_free_mb,
                 "gpu_candidates": gpu_candidates[:8],
                 "attempt_index": int(attempt_i),
                 "attempt_total": int(len(attempts)),

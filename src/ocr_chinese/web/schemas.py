@@ -16,6 +16,14 @@ class GenerateRequest(BaseModel):
     ocr_mode: str = "eco"  # eco | balanced | max
     ocr_workers: int | None = None
     ocr_device: str | None = None  # cpu | cuda (gpu is accepted as alias for cuda)
+    ocr_auto_select_gpu: bool | None = Field(
+        default=None,
+        description=(
+            "When CUDA is used, if true the pipeline may try multiple physical GPUs by free VRAM. "
+            "CUDA_VISIBLE_DEVICES is always pinned to one physical GPU for cuda runs; this flag only "
+            "controls multi-GPU attempt ordering, not visibility pinning."
+        ),
+    )
 
 
 class ImportRenderRequest(BaseModel):

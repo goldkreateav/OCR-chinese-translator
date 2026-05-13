@@ -386,41 +386,38 @@ class OrientedTextDetector:
                                 return predicted or [], scale
                         raise
 
-        use_gpu = _normalize_ocr_device(self.config.ocr_device) == "cuda"
         result: Any
         result_scale = 1.0
-        if use_gpu:
-            # GPU safety: reduce detector side limit on OOM instead of failing hard.
-            # Default sequence is conservative; override with OCR_PADDLE_MAX_SIDE_LIMITS.
-            limits_raw = str(os.getenv("OCR_PADDLE_MAX_SIDE_LIMITS", "3000,2400,2000,1600") or "").strip()
-            parsed: list[int] = []
-            for chunk in limits_raw.split(","):
-                s = chunk.strip()
-                if not s:
+        # GPU and CPU: never run Paddle det at full page resolution by default — high-DPI pages
+        # can make PaddleX allocate tens of GB (OOM on CPU with cpu_allocator.cc).
+        # Override with OCR_PADDLE_MAX_SIDE_LIMITS (comma-separated longest-side pixels, tried in order).
+        limits_raw = str(os.getenv("OCR_PADDLE_MAX_SIDE_LIMITS", "3000,2400,2000,1600") or "").strip()
+        parsed: list[int] = []
+        for chunk in limits_raw.split(","):
+            s = chunk.strip()
+            if not s:
+                continue
+            try:
+                v = int(float(s))
+            except Exception:
+                continue
+            if v > 0:
+                parsed.append(v)
+        side_limits = parsed or [3000, 2400, 2000, 1600]
+        last_exc: Exception | None = None
+        result = None
+        for lim in side_limits:
+            try:
+                result, result_scale = _run_detect_once(lim)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if _looks_like_oom(exc):
                     continue
-                try:
-                    v = int(float(s))
-                except Exception:
-                    continue
-                if v > 0:
-                    parsed.append(v)
-            side_limits = parsed or [3000, 2400, 2000, 1600]
-            last_exc: Exception | None = None
-            result = None
-            for lim in side_limits:
-                try:
-                    result, result_scale = _run_detect_once(lim)
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if _looks_like_oom(exc):
-                        continue
-                    raise
-            if last_exc is not None:
-                raise last_exc
-        else:
-            result, result_scale = _run_detect_once(None)
+                raise
+        if last_exc is not None:
+            raise last_exc
 
         raw_boxes = _extract_paddle_det_items(result)
         proposals: list[TextProposal] = []

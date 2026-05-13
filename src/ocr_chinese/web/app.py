@@ -216,7 +216,11 @@ def create_app(
         )
         ocr_device = request.ocr_device or app.state.default_ocr_device
         ocr_fallback = app.state.default_ocr_fallback_to_cpu_on_oom
-        ocr_auto_select_gpu = app.state.default_ocr_auto_select_gpu
+        ocr_auto_select_gpu = (
+            request.ocr_auto_select_gpu
+            if request.ocr_auto_select_gpu is not None
+            else app.state.default_ocr_auto_select_gpu
+        )
         ocr_min_free_vram_mb = app.state.default_ocr_min_free_vram_mb
         options = GenerateOptions(
             dpi=request.dpi,
