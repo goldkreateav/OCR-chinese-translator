@@ -773,6 +773,8 @@ function App() {
   const translationByPageRef = useRef({});
   /** Last known OCR region counts per page (progress_pages may drop after OCR completes). */
   const ocrRegionsMemoryRef = useRef({});
+  // Keep derivedPageIds in a ref so polling effects don't restart on every /status update.
+  const derivedPageIdsRef = useRef([]);
   const [pageTranslationsById, setPageTranslationsById] = useState({}); // pageId -> {items: {region_id -> entry}}
   const [assetsByPage, setAssetsByPage] = useState({});
   const [assetsRevByPage, setAssetsRevByPage] = useState({}); // pageId -> number; bumps only when image/mask url changes
@@ -931,6 +933,10 @@ function App() {
     });
     return merged;
   }, [pages, progressPages, statusPayload?.progress?.page_id]);
+
+  useEffect(() => {
+    derivedPageIdsRef.current = Array.isArray(derivedPageIds) ? derivedPageIds : [];
+  }, [derivedPageIds]);
 
   useEffect(() => {
     const key = derivedPageIds.join(",");
@@ -1149,11 +1155,13 @@ function App() {
   useEffect(() => {
     // Poll using derivedPageIds so translation progress loads even before /pages list hydrates
     // (progress_pages can already list page ids while pages[] is still empty).
-    if (!projectId || derivedPageIds.length === 0) return undefined;
+    if (!projectId) return undefined;
     const pollOnce = async () => {
       const entries = [];
       const prevMap = translationByPageRef.current || {};
-      for (const pageId of derivedPageIds) {
+      const pageIds = derivedPageIdsRef.current || [];
+      if (!Array.isArray(pageIds) || pageIds.length === 0) return;
+      for (const pageId of pageIds) {
         const tp = prevMap[pageId] || {};
         const rt = Number(tp.regions_total || 0);
         const dd = Number(tp.draft_done || 0);
@@ -1181,7 +1189,7 @@ function App() {
     pollOnce();
     const timer = window.setInterval(pollOnce, POLL_TRANSLATE_MS);
     return () => window.clearInterval(timer);
-  }, [projectId, derivedPageIds]);
+  }, [projectId]);
 
   useEffect(() => {
     // Do NOT poll translations for every page (can freeze UI on big PDFs).
