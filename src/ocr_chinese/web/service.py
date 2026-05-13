@@ -95,6 +95,110 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
                 pass
 
 
+def _normalize_generate_ocr_device(raw: str | None) -> str:
+    """
+    Map API/CLI values to the internal generate() contract: cpu | cuda.
+    Treat gpu/cuda synonyms as CUDA (matches detect._normalize_ocr_device).
+    """
+    v = str(raw or "cpu").strip().lower()
+    if v in {"cuda", "gpu"}:
+        return "cuda"
+    if v.startswith("gpu:") or v.startswith("cuda:"):
+        return "cuda"
+    return "cpu"
+
+
+def _query_gpus_free_vram_mb() -> list[dict[str, Any]]:
+    """
+    Returns list like: [{"index": 0, "free_mb": 12345, "total_mb": 24576}, ...]
+    sorted by free_mb desc.
+    Uses nvidia-smi when available. Safe to call on CPU-only hosts.
+
+    Manual verification (2+ GPUs, Linux): set OCR_FATAL_CUDA_GPU_RETRIES if needed;
+    trigger a fatal CUDA worker exit and confirm status shows fatal_cuda_retrying_physical_gpu
+    cycling other indices before retrying_on_cpu, then success or a clear multi-stage error.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.free,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in (proc.stdout or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        parts = [p.strip() for p in s.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            idx = int(parts[0])
+            free_mb = int(float(parts[1]))
+        except Exception:
+            continue
+        total_mb = None
+        if len(parts) >= 3:
+            try:
+                total_mb = int(float(parts[2]))
+            except Exception:
+                total_mb = None
+        row: dict[str, Any] = {"index": idx, "free_mb": free_mb}
+        if total_mb is not None:
+            row["total_mb"] = total_mb
+        rows.append(row)
+    rows.sort(key=lambda r: int(r.get("free_mb", 0)), reverse=True)
+    return rows
+
+
+def _apply_cpu_only_cuda_env_to_mapping(env: dict[str, str]) -> None:
+    """Hide GPUs from a subprocess so Paddle/CUDA cannot attach to a device."""
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    # Container GPU injection (NVIDIA Container Toolkit): hide devices for this child.
+    env["NVIDIA_VISIBLE_DEVICES"] = "void"
+
+
+def _apply_cpu_only_cuda_env_to_process() -> None:
+    """Same as _apply_cpu_only_cuda_env_to_mapping for the current worker process."""
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["NVIDIA_VISIBLE_DEVICES"] = "void"
+
+
+def _subprocess_env_for_generate_worker(
+    *,
+    force_cpu_only: bool,
+    cuda_visible_devices_physical: str | None = None,
+) -> dict[str, str]:
+    """
+    Build environment for generate_worker subprocess.
+
+    - force_cpu_only: no CUDA devices visible to the child.
+    - cuda_visible_devices_physical: pin to one physical GPU index (string) before
+      generate() runs; if None and not force_cpu_only, drop inherited CUDA_VISIBLE_DEVICES
+      so generate() can apply its own auto-select lock.
+    """
+    env: dict[str, str] = {str(k): str(v) for k, v in os.environ.items()}
+    if force_cpu_only:
+        _apply_cpu_only_cuda_env_to_mapping(env)
+        return env
+    pinned = (cuda_visible_devices_physical or "").strip()
+    if pinned:
+        env["CUDA_VISIBLE_DEVICES"] = pinned
+    else:
+        env.pop("CUDA_VISIBLE_DEVICES", None)
+    return env
+
+
 @dataclass
 class GenerateOptions:
     dpi: int = 360
@@ -107,6 +211,8 @@ class GenerateOptions:
     ocr_auto_select_gpu: bool = True
     ocr_min_free_vram_mb: int = 1024
     allow_fallback: bool = False
+    # Internal: background monitor pins CUDA_VISIBLE_DEVICES before worker start.
+    ocr_force_physical_gpu_index: int | None = None
 
 
 class ProjectService:
@@ -1000,9 +1106,10 @@ class ProjectService:
             "current_region": 0,
             "total_regions": 0,
         }
-        requested_device = str(options.ocr_device or "cpu").strip().lower()
-        if requested_device not in {"cpu", "cuda"}:
-            requested_device = "cpu"
+        requested_device = _normalize_generate_ocr_device(options.ocr_device)
+        if requested_device == "cpu":
+            _apply_cpu_only_cuda_env_to_process()
+
         def _set_paddle_device(device: str) -> None:
             try:
                 import paddle  # type: ignore
@@ -1019,54 +1126,6 @@ class ProjectService:
                 or "CUDA out of memory" in t
                 or "Cannot allocate" in t
             )
-
-        def _query_gpus_free_vram_mb() -> list[dict]:
-            """
-            Returns list like: [{"index": 0, "free_mb": 12345, "total_mb": 24576}, ...]
-            sorted by free_mb desc.
-            Uses nvidia-smi when available. Safe to call on CPU-only hosts.
-            """
-            try:
-                proc = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=index,memory.free,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=3.0,
-                )
-            except Exception:
-                return []
-            if proc.returncode != 0:
-                return []
-            rows: list[dict] = []
-            for line in (proc.stdout or "").splitlines():
-                s = line.strip()
-                if not s:
-                    continue
-                parts = [p.strip() for p in s.split(",")]
-                if len(parts) < 2:
-                    continue
-                try:
-                    idx = int(parts[0])
-                    free_mb = int(float(parts[1]))
-                except Exception:
-                    continue
-                total_mb = None
-                if len(parts) >= 3:
-                    try:
-                        total_mb = int(float(parts[2]))
-                    except Exception:
-                        total_mb = None
-                row: dict[str, Any] = {"index": idx, "free_mb": free_mb}
-                if total_mb is not None:
-                    row["total_mb"] = total_mb
-                rows.append(row)
-            rows.sort(key=lambda r: int(r.get("free_mb", 0)), reverse=True)
-            return rows
 
         user_set_allocator_strategy = bool(str(os.getenv("FLAGS_allocator_strategy", "") or "").strip())
         user_set_gpu_mem_limit = bool(str(os.getenv("FLAGS_gpu_memory_limit_mb", "") or "").strip())
@@ -1146,16 +1205,33 @@ class ProjectService:
         #   so Paddle can't accidentally select the other GPU in multi-GPU setups.
         cuda_visible_devices_locked_to: int | None = None
         pre_best_gpu_meta: dict | None = None
+        forced_phys = getattr(options, "ocr_force_physical_gpu_index", None)
         if requested_device == "cuda":
             pre_candidates = _query_gpus_free_vram_mb()
-            pre_best_gpu_meta = pre_candidates[0] if pre_candidates else None
-            if bool(getattr(options, "ocr_auto_select_gpu", True)) and isinstance(pre_best_gpu_meta, dict):
+            if isinstance(forced_phys, int):
                 try:
-                    cuda_visible_devices_locked_to = int(pre_best_gpu_meta.get("index"))
-                    # After this, the locked GPU becomes GPU 0 inside the process.
-                    os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices_locked_to)
+                    fi = int(forced_phys)
                 except Exception:
-                    cuda_visible_devices_locked_to = None
+                    fi = -1
+                if fi >= 0:
+                    pre_best_gpu_meta = next(
+                        (r for r in pre_candidates if int(r.get("index", -(10**9))) == fi),
+                        {"index": fi, "free_mb": 0},
+                    )
+                    try:
+                        cuda_visible_devices_locked_to = int(pre_best_gpu_meta.get("index", fi))
+                        os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices_locked_to)
+                    except Exception:
+                        cuda_visible_devices_locked_to = None
+            else:
+                pre_best_gpu_meta = pre_candidates[0] if pre_candidates else None
+                if bool(getattr(options, "ocr_auto_select_gpu", True)) and isinstance(pre_best_gpu_meta, dict):
+                    try:
+                        cuda_visible_devices_locked_to = int(pre_best_gpu_meta.get("index"))
+                        # After this, the locked GPU becomes GPU 0 inside the process.
+                        os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices_locked_to)
+                    except Exception:
+                        cuda_visible_devices_locked_to = None
             _ = _apply_paddle_cuda_memory_cap(pre_best_gpu_meta)
 
         paddle_probe = self._probe_paddle_device_runtime()
@@ -1164,7 +1240,10 @@ class ProjectService:
         gpu_candidates: list[dict] = []
         min_free = int(getattr(options, "ocr_min_free_vram_mb", 1024) or 1024)
         fallback_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False))
-        if requested_device == "cuda" and cuda_ok and bool(getattr(options, "ocr_auto_select_gpu", True)):
+        if requested_device == "cuda" and cuda_ok and (
+            bool(getattr(options, "ocr_auto_select_gpu", True))
+            or isinstance(getattr(options, "ocr_force_physical_gpu_index", None), int)
+        ):
             gpu_candidates = _query_gpus_free_vram_mb()
         gpu_attempts: list[tuple[str, int | None, dict | None]] = []
         for cand in gpu_candidates:
@@ -1178,6 +1257,19 @@ class ProjectService:
             best = gpu_candidates[0]
             idx = int(best.get("index"))
             gpu_attempts.append((f"gpu:{idx}", idx, best))
+
+        forced_phys2 = getattr(options, "ocr_force_physical_gpu_index", None)
+        if isinstance(forced_phys2, int) and requested_device == "cuda":
+            try:
+                fi2 = int(forced_phys2)
+            except Exception:
+                fi2 = -1
+            if fi2 >= 0:
+                meta2 = next(
+                    (r for r in gpu_candidates if int(r.get("index", -(10**9))) == fi2),
+                    {"index": fi2, "free_mb": 0},
+                )
+                gpu_attempts = [("gpu:0", fi2, meta2)]
 
         # If we locked CUDA_VISIBLE_DEVICES, restrict GPU attempts to just GPU 0
         # (visible inside the process). This makes behavior deterministic.
@@ -1211,6 +1303,8 @@ class ProjectService:
                 "auto_select_gpu": bool(getattr(options, "ocr_auto_select_gpu", True)),
                 "min_free_vram_mb": min_free,
                 "selected_gpu_index": gpu_idx,
+                "physical_gpu_index": gpu_idx if eff == "cuda" else None,
+                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                 "gpu_selected_free_mb": int(gpu_meta.get("free_mb")) if isinstance(gpu_meta, dict) else None,
                 "gpu_candidates": gpu_candidates[:8],
                 "attempt_index": int(attempt_i),
@@ -1226,6 +1320,7 @@ class ProjectService:
                 "gpu_mem_flag_value": mem_cap_info.get("gpu_mem_flag_value"),
                 "gpu_mem_flag_preserved": bool(mem_cap_info.get("gpu_mem_flag_preserved")),
                 **paddle_probe,
+                "paddle_logical_device": paddle_probe.get("paddle_device"),
             }
             status["updated_at"] = _utc_now()
             self._write_status(project_id, status)
@@ -1266,6 +1361,8 @@ class ProjectService:
                     "init_timeout_s": init_timeout_s,
                     "effective_device": eff,
                     "selected_gpu_index": gpu_idx,
+                    "physical_gpu_index": gpu_idx if eff == "cuda" else None,
+                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                     "gpu_selected_free_mb": int(gpu_meta.get("free_mb", 0)) if isinstance(gpu_meta, dict) else None,
                     "gpu_mem_cap_enabled": bool(mem_cap_info.get("gpu_mem_cap_enabled")),
                     "gpu_mem_cap_ratio": mem_cap_info.get("gpu_mem_cap_ratio"),
@@ -1440,15 +1537,22 @@ class ProjectService:
                     "ocr_auto_select_gpu": bool(getattr(options, "ocr_auto_select_gpu", True)),
                     "ocr_min_free_vram_mb": int(getattr(options, "ocr_min_free_vram_mb", 1024) or 1024),
                     "allow_fallback": bool(getattr(options, "allow_fallback", False)),
+                    "ocr_force_physical_gpu_index": getattr(options, "ocr_force_physical_gpu_index", None),
                 },
             }
             cmd = [sys.executable, "-m", "ocr_chinese.web.generate_worker"]
+            norm_dev = _normalize_generate_ocr_device(str(getattr(options, "ocr_device", "cpu") or "cpu"))
+            initial_env = _subprocess_env_for_generate_worker(
+                force_cpu_only=(norm_dev == "cpu"),
+                cuda_visible_devices_physical=None,
+            )
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=out_fp or subprocess.DEVNULL,
                 stderr=err_fp or subprocess.DEVNULL,
                 text=True,
+                env=initial_env,
             )
             try:
                 if proc.stdin:
@@ -1464,8 +1568,10 @@ class ProjectService:
                 cpu_retry_enabled = bool(getattr(options, "ocr_fallback_to_cpu_on_oom", False)) or bool(
                     getattr(options, "allow_fallback", False)
                 )
-                requested_device = str(getattr(options, "ocr_device", "cpu") or "cpu").strip().lower()
-                did_cpu_retry = False
+                requested_device_raw = str(getattr(options, "ocr_device", "cpu") or "cpu")
+                requested_device = _normalize_generate_ocr_device(requested_device_raw)
+                fatal_cuda_recovery_started = False
+                max_fatal_gpu_retries = max(1, int(os.getenv("OCR_FATAL_CUDA_GPU_RETRIES", "4") or "4"))
 
                 def _read_err_tail(max_bytes: int = 16000) -> str:
                     try:
@@ -1476,13 +1582,37 @@ class ProjectService:
                     except Exception:
                         return ""
 
+                def _spawn_worker(worker_payload: dict, env: dict[str, str]) -> tuple[subprocess.Popen[str], Any, Any]:
+                    try:
+                        ofp_g = open(out_log, "a", encoding="utf-8", errors="replace")
+                    except Exception:
+                        ofp_g = None
+                    try:
+                        efp_g = open(err_log, "a", encoding="utf-8", errors="replace")
+                    except Exception:
+                        efp_g = None
+                    p = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=ofp_g or subprocess.DEVNULL,
+                        stderr=efp_g or subprocess.DEVNULL,
+                        text=True,
+                        env=env,
+                    )
+                    try:
+                        if p.stdin:
+                            p.stdin.write(json.dumps(worker_payload, ensure_ascii=False) + "\n")
+                            p.stdin.flush()
+                            p.stdin.close()
+                    except Exception:
+                        pass
+                    return p, ofp_g, efp_g
+
                 while True:
-                    # process exit?
                     rc = proc.poll()
                     if rc is not None:
                         break
 
-                    # stall watchdog: if status isn't updated for too long, terminate worker.
                     try:
                         st = self.get_status(project_id)
                         age_s = self._updated_at_age_s(st)
@@ -1497,7 +1627,6 @@ class ProjectService:
                                 proc.terminate()
                             except Exception:
                                 pass
-                            # Give it a short grace period, then kill.
                             try:
                                 proc.wait(timeout=10)
                             except Exception:
@@ -1516,7 +1645,6 @@ class ProjectService:
 
                     time.sleep(2.0)
 
-                # Close log FDs (best-effort)
                 try:
                     if out_fp:
                         out_fp.close()
@@ -1532,27 +1660,36 @@ class ProjectService:
                 if rc is None:
                     return
 
-                # Successful exit: worker should have persisted final status itself.
                 if int(rc) == 0:
                     with self._generate_lock:
                         self._generate_procs.pop(project_id, None)
                     return
 
-                # Non-zero exit: classify; possibly CPU-retry if it looks like fatal CUDA.
                 err_tail = _read_err_tail()
                 fatal_cuda = self._looks_like_fatal_cuda(err_tail)
                 if (
                     fatal_cuda
-                    and not did_cpu_retry
+                    and not fatal_cuda_recovery_started
                     and cpu_retry_enabled
-                    and requested_device in {"cuda", "gpu"}
+                    and requested_device == "cuda"
                 ):
-                    did_cpu_retry = True
-                    # Mark status as retrying on CPU.
+                    fatal_cuda_recovery_started = True
+                    tried_phys: int | None = None
+                    try:
+                        st_try = self.get_status(project_id)
+                        rt_try = st_try.get("paddle_runtime") or {}
+                        if isinstance(rt_try, dict):
+                            if rt_try.get("physical_gpu_index") is not None:
+                                tried_phys = int(rt_try["physical_gpu_index"])
+                            elif rt_try.get("selected_gpu_index") is not None:
+                                tried_phys = int(rt_try["selected_gpu_index"])
+                    except Exception:
+                        tried_phys = None
+
                     try:
                         st = self.get_status(project_id)
                         st["status"] = "running"
-                        st["stage"] = str(st.get("stage") or "mask") or "mask"
+                        st["stage"] = str(st.get("stage") or "mask")
                         st["error"] = None
                         rt = st.get("paddle_runtime") or {}
                         if not isinstance(rt, dict):
@@ -1561,7 +1698,8 @@ class ProjectService:
                         rt.update(
                             {
                                 "gpu_crash_detected": True,
-                                "retrying_on_cpu": True,
+                                "retrying_on_cpu": False,
+                                "fatal_cuda_recovery": True,
                                 "last_worker_exit_code": int(rc),
                             }
                         )
@@ -1571,9 +1709,76 @@ class ProjectService:
                     except Exception:
                         pass
 
-                    # Launch a new worker with ocr_device=cpu
-                    cpu_opts = GenerateOptions(**(payload.get("options") or {}))
+                    candidates = _query_gpus_free_vram_mb()[:max_fatal_gpu_retries]
+                    for cand in candidates:
+                        try:
+                            phys = int(cand.get("index"))
+                        except Exception:
+                            continue
+                        if tried_phys is not None and phys == tried_phys:
+                            continue
+                        try:
+                            stg = self.get_status(project_id)
+                            rtg = dict(stg.get("paddle_runtime") or {})
+                            rtg.update(
+                                {
+                                    "fatal_cuda_retrying_physical_gpu": phys,
+                                    "retrying_on_cpu": False,
+                                }
+                            )
+                            stg["paddle_runtime"] = rtg
+                            stg["updated_at"] = _utc_now()
+                            self._write_status(project_id, stg)
+                        except Exception:
+                            pass
+
+                        gpu_opts = GenerateOptions(**(dict(payload.get("options") or {})))
+                        gpu_opts.ocr_device = "cuda"
+                        gpu_opts.ocr_force_physical_gpu_index = phys
+                        gpu_opts.ocr_auto_select_gpu = False
+                        gpu_payload = dict(payload)
+                        gpu_payload["options"] = dict(gpu_opts.__dict__)
+                        env_gpu = _subprocess_env_for_generate_worker(
+                            force_cpu_only=False,
+                            cuda_visible_devices_physical=str(phys),
+                        )
+                        proc_g, ofp_g, efp_g = _spawn_worker(gpu_payload, env_gpu)
+                        with self._generate_lock:
+                            self._generate_procs[project_id] = proc_g
+                        while True:
+                            rg = proc_g.poll()
+                            if rg is not None:
+                                break
+                            time.sleep(2.0)
+                        try:
+                            if ofp_g:
+                                ofp_g.close()
+                        except Exception:
+                            pass
+                        try:
+                            if efp_g:
+                                efp_g.close()
+                        except Exception:
+                            pass
+                        with self._generate_lock:
+                            self._generate_procs.pop(project_id, None)
+                        if int(rg or -1) == 0:
+                            return
+
+                    try:
+                        stc = self.get_status(project_id)
+                        rtc = dict(stc.get("paddle_runtime") or {})
+                        rtc.update({"retrying_on_cpu": True, "fatal_cuda_retrying_physical_gpu": None})
+                        stc["paddle_runtime"] = rtc
+                        stc["updated_at"] = _utc_now()
+                        self._write_status(project_id, stc)
+                    except Exception:
+                        pass
+
+                    cpu_opts = GenerateOptions(**(dict(payload.get("options") or {})))
                     cpu_opts.ocr_device = "cpu"
+                    cpu_opts.ocr_force_physical_gpu_index = None
+                    cpu_opts.ocr_auto_select_gpu = bool(getattr(options, "ocr_auto_select_gpu", True))
                     cpu_payload = dict(payload)
                     cpu_payload["options"] = dict(cpu_opts.__dict__)
                     out_log2, err_log2 = self._generate_worker_log_paths(project_id)
@@ -1585,12 +1790,14 @@ class ProjectService:
                         err_fp2 = open(err_log2, "a", encoding="utf-8", errors="replace")
                     except Exception:
                         err_fp2 = None
+                    env_cpu = _subprocess_env_for_generate_worker(force_cpu_only=True, cuda_visible_devices_physical=None)
                     proc2 = subprocess.Popen(
                         cmd,
                         stdin=subprocess.PIPE,
                         stdout=out_fp2 or subprocess.DEVNULL,
                         stderr=err_fp2 or subprocess.DEVNULL,
                         text=True,
+                        env=env_cpu,
                     )
                     try:
                         if proc2.stdin:
@@ -1601,7 +1808,6 @@ class ProjectService:
                         pass
                     with self._generate_lock:
                         self._generate_procs[project_id] = proc2
-                    # Monitor the CPU retry in the same thread.
                     proc_retry = proc2
                     while True:
                         rc2 = proc_retry.poll()
@@ -1620,20 +1826,22 @@ class ProjectService:
                         pass
                     with self._generate_lock:
                         self._generate_procs.pop(project_id, None)
-                    if int(rc2) == 0:
+                    if int(rc2 or -1) == 0:
                         return
-                    # CPU retry also failed: persist error.
                     try:
                         stf = self.get_status(project_id)
                         stf["status"] = "error"
-                        stf["error"] = f"Worker failed (exit={int(rc2)}). GPU crash detected earlier; CPU retry failed too."
+                        stf["error"] = (
+                            f"Worker failed (exit={int(rc2 or -1)}). "
+                            f"Fatal CUDA on GPU; alternate GPU retries and CPU retry all failed. "
+                            f"Logs: {err_log2.as_posix()}"
+                        )
                         stf["updated_at"] = _utc_now()
                         self._write_status(project_id, stf)
                     except Exception:
                         pass
                     return
 
-                # No retry path: persist error status.
                 try:
                     st = self.get_status(project_id)
                     st["status"] = "error"
@@ -1771,9 +1979,7 @@ class ProjectService:
 
     def _build_recognition_config(self, options: GenerateOptions) -> RecognitionConfig:
         mode = (options.ocr_mode or "eco").lower()
-        ocr_device = (options.ocr_device or "cpu").strip().lower()
-        if ocr_device not in {"cpu", "cuda"}:
-            ocr_device = "cpu"
+        ocr_device = _normalize_generate_ocr_device(options.ocr_device)
         is_cuda = ocr_device == "cuda"
         cpu = int(os.cpu_count() or 4)
         debug_raw = str(os.getenv("OCR_DEBUG_RAW_RESULTS", "") or "").strip().lower() in {"1", "true", "yes", "on"}

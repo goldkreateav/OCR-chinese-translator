@@ -15,7 +15,7 @@ class GenerateRequest(BaseModel):
     poppler_path: str | None = None
     ocr_mode: str = "eco"  # eco | balanced | max
     ocr_workers: int | None = None
-    ocr_device: str | None = None  # cpu | cuda
+    ocr_device: str | None = None  # cpu | cuda (gpu is accepted as alias for cuda)
 
 
 class ImportRenderRequest(BaseModel):
